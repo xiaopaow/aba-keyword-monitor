@@ -2,7 +2,7 @@ services:
   - type: web
     name: aba-keyword-api
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install && npm run build --workspace @aba/shared && npm run build --workspace @aba/api
     startCommand: npm run start:prod --workspace @aba/api
     envVars:
@@ -22,7 +22,7 @@ services:
   - type: web
     name: aba-keyword-web
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install && npm run build --workspace @aba/shared && npm run build --workspace @aba/web
     startCommand: npm run start --workspace @aba/web -- -H 0.0.0.0 -p $PORT
     envVars:
@@ -32,9 +32,9 @@ services:
         value: https://aba-keyword-api.onrender.com
   - type: keyvalue
     name: aba-keyword-redis
-    plan: starter
+    plan: free
     ipAllowList: []
 
 databases:
   - name: aba-keyword-db
-    plan: starter
+    plan: free
