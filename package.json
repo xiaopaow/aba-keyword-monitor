@@ -1,0 +1,22 @@
+{
+  "name": "aba-keyword-monitor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ABA关键词监控系统 V1 monorepo",
+  "scripts": {
+    "dev": "npm run dev --workspace @aba/web",
+    "dev:web": "npm run dev --workspace @aba/web",
+    "dev:api": "npm run start:dev --workspace @aba/api",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

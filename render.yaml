@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: aba-keyword-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build --workspace @aba/shared && npm run build --workspace @aba/api
+    startCommand: npm run start:prod --workspace @aba/api
+    envVars:
+      - key: NODE_VERSION
+        value: 20.20.1
+      - key: DATABASE_URL
+        fromDatabase:
+          name: aba-keyword-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: aba-keyword-redis
+          property: connectionString
+  - type: web
+    name: aba-keyword-web
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build --workspace @aba/shared && npm run build --workspace @aba/web
+    startCommand: npm run start --workspace @aba/web -- -H 0.0.0.0 -p $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: 20.20.1
+      - key: NEXT_PUBLIC_API_BASE_URL
+        fromService:
+          type: web
+          name: aba-keyword-api
+          property: host
+  - type: redis
+    name: aba-keyword-redis
+    plan: starter
+
+databases:
+  - name: aba-keyword-db
+    plan: starter
