@@ -1,5 +1,6 @@
 "use client";
 
+import type { ImportTask } from "@aba/shared";
 import {
   mockAlerts,
   mockCurrentRows,
@@ -65,6 +66,10 @@ export async function fetchAlerts() {
 
 export async function fetchImportTask() {
   return getJson("/api/import/tasks/1", mockImportTask);
+}
+
+export async function fetchImportTaskById(taskId: number) {
+  return getJson<ImportTask | null>(`/api/import/tasks/${taskId}`, null);
 }
 
 export async function uploadImport(file: File, reportDate: string) {
