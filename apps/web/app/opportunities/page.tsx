@@ -1,7 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { Eye, Tag } from "lucide-react";
+import { Eye } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { OpportunityRow } from "@aba/shared";
@@ -11,7 +11,11 @@ import { DataTable } from "../../components/data-table";
 
 export default function OpportunitiesPage() {
   const [rows, setRows] = useState<OpportunityRow[]>([]);
-  useEffect(() => { fetchOpportunities().then((data) => setRows(data.rows)); }, []);
+  async function loadRows() {
+    const data = await fetchOpportunities();
+    setRows(data.rows);
+  }
+  useEffect(() => { loadRows(); }, []);
 
   const columns = useMemo<ColumnDef<OpportunityRow>[]>(() => [
     { accessorKey: "keyword", header: "关键词" },
@@ -21,7 +25,7 @@ export default function OpportunitiesPage() {
     { accessorKey: "type", header: "机会类型", cell: ({ row }) => <Badge tone="green">{typeLabel(row.original.type)}</Badge> },
     { accessorKey: "score", header: "机会评分" },
     { accessorKey: "suggestion", header: "建议动作" },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="flex gap-2"><Link title="查看详情" href={`/keywords/${encodeURIComponent(row.original.keyword)}`}><Eye className="h-4 w-4" /></Link><button title="加标签"><Tag className="h-4 w-4" /></button></div> }
+    { id: "actions", header: "操作", cell: ({ row }) => <Link title="查看详情" href={`/keywords/${encodeURIComponent(row.original.keyword)}`}><Eye className="h-4 w-4" /></Link> }
   ], []);
 
   return (
@@ -31,7 +35,7 @@ export default function OpportunitiesPage() {
         <Field label="分组维度"><select className={inputClass}><option>全部机会词</option><option>新增机会词</option><option>爆发词</option><option>持续上涨词</option></select></Field>
         <Field label="排名区间"><select className={inputClass}><option>全部</option><option>Top1000</option><option>Top5000</option></select></Field>
         <Field label="时间范围"><select className={inputClass}><option>近7天</option><option>近30天</option></select></Field>
-        <div className="flex items-end"><Button className="w-full">刷新</Button></div>
+        <div className="flex items-end"><Button className="w-full" onClick={loadRows}>刷新</Button></div>
       </Filters>
       <DataTable data={rows} columns={columns} />
     </>

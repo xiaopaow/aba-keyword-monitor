@@ -72,13 +72,33 @@ export async function fetchImportTaskById(taskId: number) {
   return getJson<ImportTask | null>(`/api/import/tasks/${taskId}`, null);
 }
 
-export async function uploadImport(file: File, reportDate: string) {
+export async function uploadImport(file: File, reportDate: string, onProgress?: (progress: number) => void) {
   const form = new FormData();
   form.append("file", file);
   form.append("reportDate", reportDate);
-  const response = await fetch(`${API_BASE}/api/import/upload`, { method: "POST", body: form });
-  if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
-  return response.json();
+
+  if (!onProgress) {
+    const response = await fetch(`${API_BASE}/api/import/upload`, { method: "POST", body: form });
+    if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+    return response.json();
+  }
+
+  return new Promise<any>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE}/api/import/upload`);
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        resolve(JSON.parse(request.responseText));
+      } else {
+        reject(new Error(`Upload failed: ${request.status}`));
+      }
+    };
+    request.onerror = () => reject(new Error("Upload failed: network error"));
+    request.send(form);
+  });
 }
 
 export { mockCurrentRows };

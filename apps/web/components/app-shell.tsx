@@ -11,7 +11,6 @@ import {
   Search,
   Settings,
   Sparkles,
-  Star,
   Sun,
   Tags
 } from "lucide-react";
@@ -112,9 +111,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onClick={() => setDark((value) => !value)}
             >
               {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </button>
-            <button aria-label="重点关注" title="重点关注" className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background">
-              <Star className="h-4 w-4" />
             </button>
           </div>
         </header>

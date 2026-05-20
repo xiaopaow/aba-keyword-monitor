@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "next build"
   },
   "dependencies": {
     "@aba/shared": "file:../../packages/shared",

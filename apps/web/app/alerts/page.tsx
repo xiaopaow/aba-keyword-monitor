@@ -1,7 +1,7 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
-import { CheckCircle2, Eye } from "lucide-react";
+import { Eye } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { AlertRow } from "@aba/shared";
@@ -11,7 +11,11 @@ import { DataTable } from "../../components/data-table";
 
 export default function AlertsPage() {
   const [rows, setRows] = useState<AlertRow[]>([]);
-  useEffect(() => { fetchAlerts().then((data) => setRows(data.rows)); }, []);
+  async function loadRows() {
+    const data = await fetchAlerts();
+    setRows(data.rows);
+  }
+  useEffect(() => { loadRows(); }, []);
 
   const columns = useMemo<ColumnDef<AlertRow>[]>(() => [
     { accessorKey: "keyword", header: "关键词" },
@@ -22,7 +26,7 @@ export default function AlertsPage() {
     { accessorKey: "level", header: "风险等级", cell: ({ row }) => <Badge tone={row.original.level === "high" ? "red" : row.original.level === "medium" ? "yellow" : "slate"}>{levelLabel(row.original.level)}</Badge> },
     { accessorKey: "alertDate", header: "触发日期" },
     { accessorKey: "status", header: "状态", cell: ({ row }) => row.original.status === "handled" ? "已处理" : "未处理" },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="flex gap-2"><Link title="查看详情" href={`/keywords/${encodeURIComponent(row.original.keyword)}`}><Eye className="h-4 w-4" /></Link><button title="标记处理"><CheckCircle2 className="h-4 w-4" /></button></div> }
+    { id: "actions", header: "操作", cell: ({ row }) => <Link title="查看详情" href={`/keywords/${encodeURIComponent(row.original.keyword)}`}><Eye className="h-4 w-4" /></Link> }
   ], []);
 
   return (
@@ -33,7 +37,7 @@ export default function AlertsPage() {
         <Field label="排名区间"><select className={inputClass}><option>全部</option><option>Top100</option><option>Top1000</option></select></Field>
         <Field label="时间范围"><select className={inputClass}><option>近7天</option><option>近30天</option></select></Field>
         <Field label="状态"><select className={inputClass}><option>全部</option><option>未处理</option><option>已处理</option></select></Field>
-        <div className="flex items-end"><Button className="w-full">刷新</Button></div>
+        <div className="flex items-end"><Button className="w-full" onClick={loadRows}>刷新</Button></div>
       </Filters>
       <DataTable data={rows} columns={columns} />
     </>
