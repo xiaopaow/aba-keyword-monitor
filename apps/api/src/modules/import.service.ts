@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { Queue, Worker } from "bullmq";
 import csv from "csv-parser";
 import { Redis } from "ioredis";
@@ -19,13 +19,27 @@ interface ImportJob {
 }
 
 @Injectable()
-export class ImportService {
+export class ImportService implements OnModuleDestroy {
+  private readonly logger = new Logger(ImportService.name);
   private readonly uploadDir = process.env.UPLOAD_DIR ?? "uploads";
-  private readonly connection = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", { maxRetriesPerRequest: null });
-  private readonly queue = new Queue<ImportJob>("aba-import", { connection: this.connection });
-  private readonly worker = new Worker<ImportJob>("aba-import", (job) => this.process(job.data), { connection: this.connection });
+  private readonly redisUrl = process.env.REDIS_URL;
+  private readonly connection: Redis | null = this.redisUrl ? new Redis(this.redisUrl, { maxRetriesPerRequest: null }) : null;
+  private readonly queue: Queue<ImportJob> | null = this.connection ? new Queue<ImportJob>("aba-import", { connection: this.connection }) : null;
+  private readonly worker: Worker<ImportJob> | null = this.connection
+    ? new Worker<ImportJob>("aba-import", (job) => this.process(job.data), { connection: this.connection })
+    : null;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly db: DatabaseService) {
+    this.connection?.on("error", (error) => this.logger.warn(`Redis connection unavailable: ${error.message}`));
+    this.queue?.on("error", (error) => this.logger.warn(`Import queue unavailable: ${error.message}`));
+    this.worker?.on("error", (error) => this.logger.warn(`Import worker unavailable: ${error.message}`));
+  }
+
+  async onModuleDestroy() {
+    await this.worker?.close().catch(() => undefined);
+    await this.queue?.close().catch(() => undefined);
+    await this.connection?.quit().catch(() => undefined);
+  }
 
   async createTask(fileName: string, reportDate: string) {
     const result = await this.db.query<{ id: string; status: string }>(
@@ -37,8 +51,14 @@ export class ImportService {
 
   async upload(file: Express.Multer.File, reportDate: string) {
     const task = await this.createTask(file.originalname, reportDate);
-    await this.queue.add("process", { taskId: task.taskId, filePath: file.path, reportDate });
     await this.db.query("UPDATE import_task SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [task.taskId]);
+    if (this.queue) {
+      await this.queue.add("process", { taskId: task.taskId, filePath: file.path, reportDate });
+    } else {
+      this.process({ taskId: task.taskId, filePath: file.path, reportDate }).catch((error) =>
+        this.logger.error(`Inline import task ${task.taskId} failed`, error instanceof Error ? error.stack : undefined)
+      );
+    }
     return { ...task, status: "processing" };
   }
 
