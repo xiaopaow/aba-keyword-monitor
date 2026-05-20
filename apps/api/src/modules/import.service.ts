@@ -4,13 +4,16 @@ import csv from "csv-parser";
 import { Redis } from "ioredis";
 import { createReadStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { extname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { parser } from "stream-json";
-import { streamArray } from "stream-json/streamers/StreamArray.js";
 import XLSX from "xlsx";
 import { normalizeKeyword, normalizeRank } from "@aba/shared";
 import { DatabaseService } from "../db/database.service.js";
+
+const require = createRequire(import.meta.url);
+const { parser } = require("stream-json") as typeof import("stream-json");
+const { streamArray } = require("stream-json/streamers/StreamArray.js") as typeof import("stream-json/streamers/StreamArray.js");
 
 interface ImportJob {
   taskId: number;
