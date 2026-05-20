@@ -14,7 +14,7 @@ services:
           property: connectionString
       - key: REDIS_URL
         fromService:
-          type: redis
+          type: keyvalue
           name: aba-keyword-redis
           property: connectionString
   - type: web
@@ -31,9 +31,10 @@ services:
           type: web
           name: aba-keyword-api
           property: host
-  - type: redis
+  - type: keyvalue
     name: aba-keyword-redis
     plan: starter
+    ipAllowList: []
 
 databases:
   - name: aba-keyword-db
