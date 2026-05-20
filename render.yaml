@@ -12,6 +12,8 @@ services:
         fromDatabase:
           name: aba-keyword-db
           property: connectionString
+      - key: CORS_ORIGIN
+        value: https://aba-keyword-web.onrender.com
       - key: REDIS_URL
         fromService:
           type: keyvalue
@@ -27,10 +29,7 @@ services:
       - key: NODE_VERSION
         value: 20.20.1
       - key: NEXT_PUBLIC_API_BASE_URL
-        fromService:
-          type: web
-          name: aba-keyword-api
-          property: host
+        value: https://aba-keyword-api.onrender.com
   - type: keyvalue
     name: aba-keyword-redis
     plan: starter
