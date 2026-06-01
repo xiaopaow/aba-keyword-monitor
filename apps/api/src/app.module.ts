@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { DatabaseService } from "./db/database.service.js";
+import { MysqlService } from "./db/mysql.service.js";
 import { HealthController } from "./health.controller.js";
 import { AbaController } from "./modules/aba.controller.js";
 import { AbaService } from "./modules/aba.service.js";
@@ -12,6 +13,6 @@ import { RuleService } from "./modules/rule.service.js";
 
 @Module({
   controllers: [HealthController, AbaController, DashboardController, KeywordController, ImportController],
-  providers: [DatabaseService, AbaService, KeywordService, RuleService, ImportService]
+  providers: [DatabaseService, MysqlService, AbaService, KeywordService, RuleService, ImportService]
 })
 export class AppModule {}

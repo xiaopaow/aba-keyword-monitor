@@ -1,19 +1,25 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(DatabaseService.name);
   private readonly pool = new Pool({
     connectionString: process.env.DATABASE_URL ?? "postgres://aba:aba_password@localhost:5432/aba_keywords"
   });
 
   async onModuleInit() {
-    const schema = await readFile(join(process.cwd(), "src/db/schema.sql"), "utf8").catch(() =>
-      readFile(join(process.cwd(), "dist/db/schema.sql"), "utf8")
-    );
-    await this.pool.query(schema);
+    try {
+      const schema = await readFile(join(process.cwd(), "src/db/schema.sql"), "utf8").catch(() =>
+        readFile(join(process.cwd(), "dist/db/schema.sql"), "utf8")
+      );
+      await this.pool.query(schema);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`PostgreSQL unavailable; legacy dashboard/import APIs may not work. ${message}`);
+    }
   }
 
   async onModuleDestroy() {
