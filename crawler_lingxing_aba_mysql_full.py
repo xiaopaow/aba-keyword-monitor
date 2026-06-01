@@ -259,6 +259,17 @@ def iter_aba_rows(json_path: Path, meta: Dict[str, object]) -> Iterator[Tuple[ob
     """Yield one deduped row per searchTerm, preserving the top 3 clicked products."""
     current_term: Optional[str] = None
     group: List[dict] = []
+    seen_terms = set()
+
+    def emit_if_new(items: List[dict]) -> Optional[Tuple[object, ...]]:
+        if not items:
+            return None
+        term = normalize_text(items[0].get("searchTerm"), 500)
+        if not term or term in seen_terms:
+            return None
+        seen_terms.add(term)
+        return emit_group_row(meta, items)
+
     with json_path.open("rb") as file:
         for item in ijson.items(file, "dataByDepartmentAndSearchTerm.item"):
             search_term = normalize_text(item.get("searchTerm"), 500)
@@ -269,7 +280,7 @@ def iter_aba_rows(json_path: Path, meta: Dict[str, object]) -> Iterator[Tuple[ob
                 current_term = search_term
 
             if search_term != current_term:
-                row = emit_group_row(meta, group)
+                row = emit_if_new(group)
                 if row:
                     yield row
                 current_term = search_term
@@ -277,7 +288,7 @@ def iter_aba_rows(json_path: Path, meta: Dict[str, object]) -> Iterator[Tuple[ob
 
             group.append(item)
 
-    row = emit_group_row(meta, group)
+    row = emit_if_new(group)
     if row:
         yield row
 
@@ -435,7 +446,7 @@ def migrate_table_if_needed(conn, table_name: str):
 def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> int:
     table = quote_identifier(table_name)
     sql = f"""
-    INSERT INTO {table} (
+    INSERT IGNORE INTO {table} (
         report_start_date,
         report_end_date,
         report_period,
