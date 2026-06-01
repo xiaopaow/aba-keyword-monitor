@@ -108,3 +108,40 @@ export interface ImportTask {
   createdAt?: string;
   finishedAt?: string;
 }
+
+export interface AbaWeek {
+  id: number;
+  marketplaceId: string;
+  periodStart: string;
+  periodEnd: string;
+  label: string;
+  totalTerms: number;
+}
+
+export interface AbaTopProduct {
+  asin: string | null;
+  itemName: string | null;
+  clickShareRank: number | null;
+  clickShare: number | null;
+  conversionShare: number | null;
+}
+
+export interface AbaSearchTermRow {
+  keyword: string;
+  departmentName: string | null;
+  currentRank: number | null;
+  compareRank: number | null;
+  rankChange: number | null;
+  changeType: ChangeType;
+  topProducts: AbaTopProduct[];
+}
+
+export interface AbaSearchTermsResponse {
+  rows: AbaSearchTermRow[];
+  page: number;
+  pageSize: number;
+  total: number;
+  weekStart: string | null;
+  weekEnd: string | null;
+  compareWeekStart: string | null;
+}

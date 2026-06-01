@@ -1,6 +1,6 @@
 "use client";
 
-import type { ImportTask } from "@aba/shared";
+import type { AbaSearchTermsResponse, AbaWeek, ImportTask } from "@aba/shared";
 import {
   mockAlerts,
   mockCurrentRows,
@@ -70,6 +70,26 @@ export async function fetchImportTask() {
 
 export async function fetchImportTaskById(taskId: number) {
   return getJson<ImportTask | null>(`/api/import/tasks/${taskId}`, null);
+}
+
+export async function fetchAbaWeeks() {
+  return getJson<AbaWeek[]>("/api/aba/weeks", []);
+}
+
+export async function fetchAbaSearchTerms(params: Record<string, string | number | undefined>) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return getJson<AbaSearchTermsResponse>(`/api/aba/search-terms?${query.toString()}`, {
+    rows: [],
+    page: Number(params.page ?? 1),
+    pageSize: Number(params.pageSize ?? 50),
+    total: 0,
+    weekStart: null,
+    weekEnd: null,
+    compareWeekStart: null
+  });
 }
 
 export async function uploadImport(file: File, reportDate: string, onProgress?: (progress: number) => void) {

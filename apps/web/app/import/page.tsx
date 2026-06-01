@@ -1,17 +1,21 @@
 "use client";
 
+import type { ImportTask } from "@aba/shared";
 import { AlertCircle, CheckCircle2, CloudUpload, FileSpreadsheet, Loader2, Play, RefreshCw, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { ImportTask } from "@aba/shared";
-import { fetchImportTaskById, uploadImport } from "../../lib/api";
 import { Badge, Button, Card, CardHeader, Field, inputClass, MetricCard, PageHeader } from "../../components/ui";
+import { fetchImportTaskById, uploadImport } from "../../lib/api";
 
 type ImportState = "idle" | "previewing" | "ready" | "uploading" | "processing" | "success" | "failed";
 
 interface PreviewRow {
   keyword: string;
   rank: number;
-  reportDate: string;
+  departmentName?: string;
+  asin?: string;
+  itemName?: string;
+  clickShare?: number | null;
+  conversionShare?: number | null;
 }
 
 interface PreviewStats {
@@ -21,14 +25,16 @@ interface PreviewStats {
   invalidRows: number;
   bytesRead: number;
   stoppedEarly: boolean;
+  periodStart?: string;
+  periodEnd?: string;
   warning?: string;
 }
 
 export default function ImportPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [reportDate, setReportDate] = useState("2026-05-20");
+  const [reportDate, setReportDate] = useState("2026-05-17");
   const [state, setState] = useState<ImportState>("idle");
-  const [message, setMessage] = useState("请选择 JSON、CSV 或 XLSX 文件。");
+  const [message, setMessage] = useState("请选择 ABA 周报 JSON、CSV 或 XLSX 文件。");
   const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
   const [previewStats, setPreviewStats] = useState<PreviewStats | null>(null);
   const [previewProgress, setPreviewProgress] = useState(0);
@@ -45,11 +51,11 @@ export default function ImportPage() {
       setTask(next);
       if (next.status === "success") {
         setState("success");
-        setMessage("导入完成，可以到总览看板或关键词监控查看数据。");
+        setMessage("导入完成，可以回到 ABA 搜索词页查看周报数据。");
       }
       if (next.status === "failed" || next.status === "cancelled") {
         setState("failed");
-        setMessage(next.errorMessage || "导入失败，请检查文件格式和字段映射。");
+        setMessage(next.errorMessage || "导入失败，请检查文件格式和字段。");
       }
     }, 3000);
     return () => window.clearInterval(timer);
@@ -68,12 +74,12 @@ export default function ImportPage() {
 
     if (!nextFile) {
       setState("idle");
-      setMessage("请选择 JSON、CSV 或 XLSX 文件。");
+      setMessage("请选择 ABA 周报 JSON、CSV 或 XLSX 文件。");
       return;
     }
 
     setState("previewing");
-    setMessage(`正在清洗预览 ${nextFile.name}，只读取必要片段并提取前 100 条唯一关键词。`);
+    setMessage(`正在本地读取 ${nextFile.name}，只清洗前 100 个唯一搜索词用于确认。`);
 
     try {
       const result = await buildPreview(nextFile, reportDate, (progress) => {
@@ -82,11 +88,12 @@ export default function ImportPage() {
       if (previewRunId.current !== runId) return;
       setPreviewRows(result.rows);
       setPreviewStats(result.stats);
+      if (result.stats.periodStart) setReportDate(result.stats.periodStart);
       setPreviewProgress(100);
       setState(result.rows.length > 0 ? "ready" : "failed");
       setMessage(
         result.rows.length > 0
-          ? `${nextFile.name} 已清洗出 ${result.rows.length} 条预览数据。确认字段无误后可开始上传导入。`
+          ? `已清洗出 ${result.rows.length} 条预览数据。确认字段无误后再上传导入。`
           : "没有清洗出可导入数据，请检查 searchTerm 和 searchFrequencyRank 字段。"
       );
     } catch (error) {
@@ -100,16 +107,16 @@ export default function ImportPage() {
     if (!file || previewRows.length === 0) return;
     setState("uploading");
     setUploadProgress(0);
-    setMessage(`正在上传 ${file.name}，请不要关闭页面。上传完成后会自动创建导入任务。`);
+    setMessage(`正在上传 ${file.name}。上传完成后后端会流式解析并入库。`);
     try {
       const created = await uploadImport(file, reportDate, setUploadProgress);
       setTaskId(created.taskId);
       setTask(created);
       setState("processing");
-      setMessage(`上传完成，已创建导入任务 #${created.taskId}，正在后台流式解析并入库。`);
+      setMessage(`已创建导入任务 #${created.taskId}，正在后台解析。`);
     } catch (error) {
       setState("failed");
-      setMessage(error instanceof Error ? error.message : "上传失败，请检查网络、文件大小或 Render 实例限制。");
+      setMessage(error instanceof Error ? error.message : "上传失败，可能是网络、文件过大或 Render 实例限制。");
     }
   }
 
@@ -126,7 +133,7 @@ export default function ImportPage() {
 
   return (
     <>
-      <PageHeader title="数据导入" description="先本地清洗预览前 100 条，再确认上传并后台流式导入。" />
+      <PageHeader title="数据导入" description="先本地清洗预览前 100 个唯一搜索词，再确认上传并后台流式导入。" />
       <StatusBanner state={state} message={message} />
 
       <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
@@ -136,7 +143,7 @@ export default function ImportPage() {
             <label className="flex min-h-48 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-blue-300 bg-blue-50/60 p-6 text-center dark:bg-blue-500/10">
               <CloudUpload className="h-10 w-10 text-blue-600" />
               <span className="mt-3 text-sm font-medium">{file ? file.name : "点击上传或拖拽文件到此处"}</span>
-              <span className="mt-1 text-xs text-slate-500">支持 JSON、CSV、XLSX。百万级数据建议优先使用 CSV。</span>
+              <span className="mt-1 text-xs text-slate-500">支持 ABA 周报 JSON、CSV、XLSX。3GB JSON 建议后续改成本地转换或分片导入。</span>
               <input className="hidden" type="file" accept=".csv,.json,.xlsx,.xls" onChange={(event) => onFileSelected(event.target.files?.[0] ?? null)} />
             </label>
 
@@ -150,14 +157,14 @@ export default function ImportPage() {
                 </div>
                 {isLargeFile && (
                   <div className="mt-2 text-xs text-amber-700 dark:text-amber-200">
-                    大文件预览只读取必要片段，不会整文件载入内存。3GB JSON 直接上传到 Render 免费实例仍可能超时，后续建议做本地转 CSV 或分片导入。
+                    大文件预览不会整文件读入内存；但直接把 3GB 文件上传到 Render 免费实例仍可能超时，建议后续让本地爬虫直接调用导入接口或做分片上传。
                   </div>
                 )}
               </div>
             )}
 
             <div className="grid gap-3 md:grid-cols-3">
-              <Field label="数据日期">
+              <Field label="报告开始日期">
                 <input className={inputClass} type="date" value={reportDate} onChange={(event) => setReportDate(event.target.value)} />
               </Field>
               <Field label="关键词字段">
@@ -173,12 +180,14 @@ export default function ImportPage() {
             </div>
 
             <div className="rounded-lg border border-border bg-card">
-              <div className="border-b border-border px-3 py-2 text-sm font-medium">字段清洗规则</div>
+              <div className="border-b border-border px-3 py-2 text-sm font-medium">识别规则</div>
               <div className="grid gap-2 p-3 text-sm text-slate-600 dark:text-slate-300 md:grid-cols-2">
-                <div>保留：searchTerm → keyword</div>
-                <div>保留：searchFrequencyRank → rank</div>
-                <div>补充：页面选择的数据日期 → reportDate</div>
-                <div>忽略：clickedAsin、clickedItemName、clickShare、conversionShare</div>
+                <div>报告周期：reportSpecification.dataStartTime ~ dataEndTime</div>
+                <div>站点：marketplaceIds，当前默认美国站</div>
+                <div>搜索词：searchTerm</div>
+                <div>排名：searchFrequencyRank</div>
+                <div>商品：clickedAsin、clickedItemName、clickShareRank</div>
+                <div>份额：clickShare、conversionShare</div>
               </div>
             </div>
 
@@ -219,6 +228,11 @@ export default function ImportPage() {
                 <MetricCard label="后端已处理" value={(task?.processedRows ?? 0).toLocaleString()} />
                 <MetricCard label="状态" value={task?.status ?? state} />
               </div>
+              {previewStats?.periodStart && (
+                <div className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                  识别到周报周期：{previewStats.periodStart} ~ {previewStats.periodEnd}
+                </div>
+              )}
               {previewStats?.warning && <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">{previewStats.warning}</div>}
             </div>
           </Card>
@@ -232,7 +246,7 @@ function PreviewTable({ rows, stats }: { rows: PreviewRow[]; stats: PreviewStats
   if (!rows.length) {
     return (
       <div className="rounded-lg border border-border bg-slate-50 px-3 py-6 text-center text-sm text-slate-500 dark:bg-slate-800">
-        选择文件后会在这里显示清洗出的前 100 条唯一关键词。
+        选择文件后会在这里显示清洗出的前 100 个唯一搜索词。
       </div>
     );
   }
@@ -246,20 +260,26 @@ function PreviewTable({ rows, stats }: { rows: PreviewRow[]; stats: PreviewStats
         </span>
       </div>
       <div className="max-h-80 overflow-auto">
-        <table className="w-full min-w-[620px] text-sm">
+        <table className="w-full min-w-[920px] text-sm">
           <thead className="sticky top-0 bg-slate-50 text-xs text-slate-500 dark:bg-slate-800">
             <tr>
-              <th className="px-3 py-2 text-left">keyword</th>
-              <th className="px-3 py-2 text-left">rank</th>
-              <th className="px-3 py-2 text-left">reportDate</th>
+              <th className="px-3 py-2 text-left">搜索词</th>
+              <th className="px-3 py-2 text-left">排名</th>
+              <th className="px-3 py-2 text-left">ASIN</th>
+              <th className="px-3 py-2 text-left">商品</th>
+              <th className="px-3 py-2 text-left">点击/转化</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={`${row.keyword}-${row.rank}`} className="border-t border-border">
-                <td className="px-3 py-2">{row.keyword}</td>
+                <td className="px-3 py-2 font-medium">{row.keyword}</td>
                 <td className="px-3 py-2">{row.rank}</td>
-                <td className="px-3 py-2">{row.reportDate}</td>
+                <td className="px-3 py-2 text-blue-600">{row.asin || "-"}</td>
+                <td className="max-w-[360px] truncate px-3 py-2">{row.itemName || "-"}</td>
+                <td className="px-3 py-2">
+                  {formatPercent(row.clickShare)} / {formatPercent(row.conversionShare)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -291,7 +311,7 @@ async function buildPreview(file: File, reportDate: string, onProgress: (progres
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "json") return previewJson(file, reportDate, onProgress);
   if (extension === "csv") return previewCsv(file, reportDate, onProgress);
-  throw new Error("当前预览优先支持 JSON/CSV。XLSX 可上传导入，但暂不做本地预览。");
+  throw new Error("当前本地预览优先支持 JSON/CSV。XLSX 可以上传导入，但暂不做浏览器端预览。");
 }
 
 async function previewJson(file: File, reportDate: string, onProgress: (progress: number) => void) {
@@ -306,11 +326,14 @@ async function previewJson(file: File, reportDate: string, onProgress: (progress
   let escape = false;
   const maxPreviewBytes = Math.min(file.size, 256 * 1024 * 1024);
 
-  const consumeRecord = (record: unknown) => {
+  const consumeRecord = (record: any) => {
+    if (record.dataStartTime) stats.periodStart = String(record.dataStartTime);
+    if (record.dataEndTime) stats.periodEnd = String(record.dataEndTime);
+    if (!("searchTerm" in record) && !("searchFrequencyRank" in record)) return;
+
     stats.scannedRows += 1;
-    const source = record as { searchTerm?: unknown; searchFrequencyRank?: unknown };
-    const keyword = String(source.searchTerm ?? "").trim();
-    const rank = Number(source.searchFrequencyRank);
+    const keyword = String(record.searchTerm ?? "").trim();
+    const rank = Number(record.searchFrequencyRank);
     if (!keyword || !Number.isInteger(rank) || rank <= 0) {
       stats.invalidRows += 1;
       return;
@@ -321,7 +344,15 @@ async function previewJson(file: File, reportDate: string, onProgress: (progress
       return;
     }
     seen.add(key);
-    rows.push({ keyword, rank, reportDate });
+    rows.push({
+      keyword,
+      rank,
+      departmentName: normalizeText(record.departmentName),
+      asin: normalizeText(record.clickedAsin),
+      itemName: normalizeText(record.clickedItemName),
+      clickShare: normalizeNumber(record.clickShare),
+      conversionShare: normalizeNumber(record.conversionShare)
+    });
     stats.validRows += 1;
   };
 
@@ -339,7 +370,6 @@ async function previewJson(file: File, reportDate: string, onProgress: (progress
         }
         continue;
       }
-
       current += char;
       if (inString) {
         if (escape) escape = false;
@@ -365,11 +395,12 @@ async function previewJson(file: File, reportDate: string, onProgress: (progress
 
     onProgress(Math.min(99, Math.round((stats.bytesRead / maxPreviewBytes) * 100)));
     if (stats.bytesRead >= maxPreviewBytes && rows.length < 100) {
-      stats.warning = `已读取 ${formatBytes(stats.bytesRead)}，只找到 ${rows.length} 条有效预览。请检查 JSON 字段是否为 searchTerm/searchFrequencyRank。`;
+      stats.warning = `已读取 ${formatBytes(stats.bytesRead)}，只找到 ${rows.length} 条有效预览。请确认 JSON 字段是否为 searchTerm/searchFrequencyRank。`;
       break;
     }
   }
 
+  if (!stats.periodStart) stats.periodStart = reportDate;
   stats.stoppedEarly = rows.length >= 100;
   await reader.cancel().catch(() => undefined);
   onProgress(100);
@@ -381,7 +412,7 @@ async function previewCsv(file: File, reportDate: string, onProgress: (progress:
   const decoder = new TextDecoder();
   const rows: PreviewRow[] = [];
   const seen = new Set<string>();
-  const stats: PreviewStats = { scannedRows: 0, validRows: 0, duplicateRows: 0, invalidRows: 0, bytesRead: 0, stoppedEarly: false };
+  const stats: PreviewStats = { scannedRows: 0, validRows: 0, duplicateRows: 0, invalidRows: 0, bytesRead: 0, stoppedEarly: false, periodStart: reportDate };
   let pending = "";
   let headers: string[] | null = null;
 
@@ -414,7 +445,7 @@ async function previewCsv(file: File, reportDate: string, onProgress: (progress:
         continue;
       }
       seen.add(key);
-      rows.push({ keyword, rank, reportDate });
+      rows.push({ keyword, rank, asin: normalizeText(record.clickedAsin), itemName: normalizeText(record.clickedItemName) });
       stats.validRows += 1;
       if (rows.length >= 100) break;
     }
@@ -470,4 +501,20 @@ function formatBytes(bytes: number) {
     unitIndex += 1;
   }
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function normalizeText(raw: unknown) {
+  const value = String(raw ?? "").trim();
+  return value || undefined;
+}
+
+function normalizeNumber(raw: unknown) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value === null || value === undefined) return "-";
+  return `${(value * 100).toFixed(2)}%`;
 }
