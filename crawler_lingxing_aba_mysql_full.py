@@ -295,6 +295,90 @@ def create_table_if_not_exists(conn, table_name: str):
     """
     with conn.cursor() as cursor:
         cursor.execute(sql)
+    migrate_table_if_needed(conn, table_name)
+
+
+def column_exists(conn, table_name: str, column_name: str) -> bool:
+    sql = """
+    SELECT COUNT(*)
+    FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = %s
+      AND column_name = %s;
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(sql, (table_name, column_name))
+        return cursor.fetchone()[0] > 0
+
+
+def index_exists(conn, table_name: str, index_name: str) -> bool:
+    sql = """
+    SELECT COUNT(*)
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = %s
+      AND index_name = %s;
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(sql, (table_name, index_name))
+        return cursor.fetchone()[0] > 0
+
+
+def run_ddl(conn, sql: str):
+    with conn.cursor() as cursor:
+        cursor.execute(sql)
+
+
+def add_column_if_missing(conn, table_name: str, column_name: str, definition: str):
+    if not column_exists(conn, table_name, column_name):
+        run_ddl(conn, f"ALTER TABLE {quote_identifier(table_name)} ADD COLUMN {column_name} {definition};")
+
+
+def add_index_if_missing(conn, table_name: str, index_name: str, definition: str):
+    if not index_exists(conn, table_name, index_name):
+        run_ddl(conn, f"ALTER TABLE {quote_identifier(table_name)} ADD {definition};")
+
+
+def drop_index_if_exists(conn, table_name: str, index_name: str):
+    if index_exists(conn, table_name, index_name):
+        run_ddl(conn, f"ALTER TABLE {quote_identifier(table_name)} DROP INDEX {index_name};")
+
+
+def migrate_table_if_needed(conn, table_name: str):
+    """Upgrade old rank-only tables so full ABA rows can be inserted."""
+    table = quote_identifier(table_name)
+    add_column_if_missing(conn, table_name, "report_start_date", "DATE NULL")
+    add_column_if_missing(conn, table_name, "report_end_date", "DATE NULL")
+    add_column_if_missing(conn, table_name, "report_period", "VARCHAR(20) DEFAULT 'WEEK'")
+    add_column_if_missing(conn, table_name, "marketplace_id", "VARCHAR(50) DEFAULT 'ATVPDKIKX0DER'")
+    add_column_if_missing(conn, table_name, "department_name", "VARCHAR(255) NULL")
+    add_column_if_missing(conn, table_name, "clicked_asin", "VARCHAR(50) NULL")
+    add_column_if_missing(conn, table_name, "clicked_item_name", "TEXT NULL")
+    add_column_if_missing(conn, table_name, "click_share_rank", "INT NULL")
+    add_column_if_missing(conn, table_name, "click_share", "DECIMAL(12, 6) NULL")
+    add_column_if_missing(conn, table_name, "conversion_share", "DECIMAL(12, 6) NULL")
+    add_column_if_missing(conn, table_name, "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+
+    if column_exists(conn, table_name, "report_date"):
+        run_ddl(conn, f"UPDATE {table} SET report_start_date = COALESCE(report_start_date, report_date);")
+
+    run_ddl(conn, f"ALTER TABLE {table} MODIFY search_term VARCHAR(500) NOT NULL;")
+    run_ddl(conn, f"ALTER TABLE {table} MODIFY report_start_date DATE NOT NULL;")
+
+    # Old tables used UNIQUE(report_date, search_term), which prevents the 3 product rows per keyword.
+    drop_index_if_exists(conn, table_name, "uk_report_term")
+    add_index_if_missing(
+        conn,
+        table_name,
+        "uk_report_term_product",
+        "UNIQUE KEY uk_report_term_product (report_start_date, search_term, click_share_rank, clicked_asin)"
+    )
+    add_index_if_missing(conn, table_name, "idx_search_term", "INDEX idx_search_term (search_term)")
+    add_index_if_missing(conn, table_name, "idx_rank", "INDEX idx_rank (search_frequency_rank)")
+    add_index_if_missing(conn, table_name, "idx_asin", "INDEX idx_asin (clicked_asin)")
+    add_index_if_missing(conn, table_name, "idx_click_rank", "INDEX idx_click_rank (click_share_rank)")
+    add_index_if_missing(conn, table_name, "idx_report_start", "INDEX idx_report_start (report_start_date)")
+    add_index_if_missing(conn, table_name, "idx_term_rank", "INDEX idx_term_rank (search_term, click_share_rank)")
 
 
 def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> int:
