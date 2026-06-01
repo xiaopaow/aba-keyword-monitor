@@ -24,10 +24,8 @@ interface AbaSearchQuery {
 
 interface WeekTable extends RowDataPacket {
   table_name: string;
-  period_start: string | null;
-  period_end: string | null;
+  row_count_estimate: number | null;
   marketplace_id: string | null;
-  total_terms: number;
 }
 
 interface CountRow extends RowDataPacket {
@@ -44,6 +42,31 @@ interface SearchRow extends RowDataPacket {
   top_products: string | null;
 }
 
+interface WidePageRow extends RowDataPacket {
+  search_term: string;
+  department_name: string | null;
+  current_rank: number | null;
+  max_click_share: number | null;
+  max_conversion_share: number | null;
+  product1_asin: string | null;
+  product1_item_name: string | null;
+  product1_click_share: number | null;
+  product1_conversion_share: number | null;
+  product2_asin: string | null;
+  product2_item_name: string | null;
+  product2_click_share: number | null;
+  product2_conversion_share: number | null;
+  product3_asin: string | null;
+  product3_item_name: string | null;
+  product3_click_share: number | null;
+  product3_conversion_share: number | null;
+}
+
+interface CompareRankRow extends RowDataPacket {
+  search_term: string;
+  compare_rank: number | null;
+}
+
 @Injectable()
 export class AbaService {
   private readonly logger = new Logger(AbaService.name);
@@ -52,39 +75,31 @@ export class AbaService {
 
   async weeks(): Promise<AbaWeek[]> {
     const database = process.env.MYSQL_DATABASE ?? "lingxing";
-    const tables = await this.mysql.query<RowDataPacket>(
-      `SELECT table_name
+    const tables = await this.mysql.query<WeekTable>(
+      `SELECT TABLE_NAME AS table_name, COALESCE(AUTO_INCREMENT - 1, TABLE_ROWS) AS row_count_estimate
        FROM information_schema.tables
-       WHERE table_schema = ?
-         AND table_name REGEXP '^aba_search_terms(_[0-9]{8})?$'
-       ORDER BY table_name DESC`,
+       WHERE TABLE_SCHEMA = ?
+         AND TABLE_NAME REGEXP '^aba_search_terms_[0-9]{8}$'
+       ORDER BY TABLE_NAME DESC`,
       [database]
     );
 
     const weeks: AbaWeek[] = [];
-    for (const row of tables as Array<{ table_name: string }>) {
+    for (const row of tables) {
       const tableName = row.table_name;
       if (!isSafeAbaTableName(tableName)) continue;
       try {
-        const [meta] = await this.mysql.query<WeekTable>(
-          `SELECT
-             ${dateExpression(tableName)} AS period_start,
-             ${hasFullSchemaExpression("report_end_date")} AS period_end,
-             ${hasFullSchemaExpression("marketplace_id")} AS marketplace_id,
-             COUNT(DISTINCT ${termColumnExpression(tableName)}) AS total_terms
-           FROM ${quoteIdentifier(tableName)}`
-        );
         const fallbackStart = dateFromTableName(tableName);
-        const periodStart = normalizeDate(meta?.period_start) ?? fallbackStart;
+        const periodStart = fallbackStart;
         if (!periodStart) continue;
-        const periodEnd = normalizeDate(meta?.period_end) ?? periodStart;
+        const periodEnd = addDays(periodStart, 6);
         weeks.push({
           id: Number(periodStart.replaceAll("-", "")),
-          marketplaceId: meta?.marketplace_id ?? "ATVPDKIKX0DER",
+          marketplaceId: "ATVPDKIKX0DER",
           periodStart,
           periodEnd,
           label: `${periodStart} ~ ${periodEnd}`,
-          totalTerms: Number(meta?.total_terms ?? 0)
+          totalTerms: Number(row.row_count_estimate ?? 0)
         });
       } catch (error) {
         this.logger.warn(`Skip ABA table ${tableName}: ${error instanceof Error ? error.message : String(error)}`);
@@ -115,6 +130,17 @@ export class AbaService {
     }
     const compareExists = compareTable ? await this.tableExists(compareTable) : false;
     const isWideTable = await this.columnExists(currentTable, "product1_asin");
+    if (isWideTable && (!query.changeType || query.changeType === "all")) {
+      return this.searchWideTermsFast({
+        query,
+        page,
+        pageSize,
+        currentTable,
+        compareTable: compareExists ? compareTable : null,
+        currentWeek,
+        compareWeek: compareExists ? compareWeek : null
+      });
+    }
 
     const params: unknown[] = [];
     const where: string[] = [];
@@ -223,6 +249,127 @@ export class AbaService {
     return rows.length > 0;
   }
 
+  private async searchWideTermsFast({
+    query,
+    page,
+    pageSize,
+    currentTable,
+    compareTable,
+    currentWeek,
+    compareWeek
+  }: {
+    query: AbaSearchQuery;
+    page: number;
+    pageSize: number;
+    currentTable: string;
+    compareTable: string | null;
+    currentWeek: AbaWeek;
+    compareWeek: AbaWeek | null;
+  }): Promise<AbaSearchTermsResponse> {
+    const current = quoteIdentifier(currentTable);
+    const params: unknown[] = [];
+    const where: string[] = [];
+    const add = (value: unknown) => {
+      params.push(value);
+      return "?";
+    };
+    const maxClickShare = "GREATEST(COALESCE(product1_click_share, 0), COALESCE(product2_click_share, 0), COALESCE(product3_click_share, 0))";
+    const maxConversionShare =
+      "GREATEST(COALESCE(product1_conversion_share, 0), COALESCE(product2_conversion_share, 0), COALESCE(product3_conversion_share, 0))";
+
+    if (query.keyword?.trim()) where.push(`LOWER(search_term) LIKE LOWER(${add(`%${query.keyword.trim()}%`)})`);
+    if (query.excludeKeyword?.trim()) where.push(`LOWER(search_term) NOT LIKE LOWER(${add(`%${query.excludeKeyword.trim()}%`)})`);
+    if (query.rankMin) where.push(`search_frequency_rank >= ${add(Number(query.rankMin))}`);
+    if (query.rankMax) where.push(`search_frequency_rank <= ${add(Number(query.rankMax))}`);
+    if (query.asin?.trim()) {
+      where.push(
+        `(LOWER(product1_asin) = LOWER(${add(query.asin.trim())})
+          OR LOWER(product2_asin) = LOWER(${add(query.asin.trim())})
+          OR LOWER(product3_asin) = LOWER(${add(query.asin.trim())}))`
+      );
+    }
+    if (query.clickShareMin) where.push(`${maxClickShare} >= ${add(Number(query.clickShareMin) / 100)}`);
+    if (query.clickShareMax) where.push(`${maxClickShare} <= ${add(Number(query.clickShareMax) / 100)}`);
+    if (query.conversionShareMin) where.push(`${maxConversionShare} >= ${add(Number(query.conversionShareMin) / 100)}`);
+    if (query.conversionShareMax) where.push(`${maxConversionShare} <= ${add(Number(query.conversionShareMax) / 100)}`);
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const sortMap = {
+      rank: "search_frequency_rank",
+      rankChange: "search_frequency_rank",
+      clickShare: "max_click_share",
+      conversionShare: "max_conversion_share",
+      keyword: "search_term"
+    } satisfies Record<NonNullable<AbaSearchQuery["sort"]>, string>;
+    const sort = sortMap[query.sort ?? "rank"] ?? sortMap.rank;
+    const order = query.order === "desc" ? "DESC" : "ASC";
+
+    const total = where.length
+      ? Number((await this.mysql.query<CountRow>(`SELECT COUNT(*) AS total FROM ${current} ${whereSql}`, params))[0]?.total ?? 0)
+      : Number(currentWeek.totalTerms ?? 0);
+
+    const rows = await this.mysql.query<WidePageRow>(
+      `SELECT
+         search_term,
+         department_name,
+         search_frequency_rank AS current_rank,
+         ${maxClickShare} AS max_click_share,
+         ${maxConversionShare} AS max_conversion_share,
+         product1_asin,
+         product1_item_name,
+         product1_click_share,
+         product1_conversion_share,
+         product2_asin,
+         product2_item_name,
+         product2_click_share,
+         product2_conversion_share,
+         product3_asin,
+         product3_item_name,
+         product3_click_share,
+         product3_conversion_share
+       FROM ${current}
+       ${whereSql}
+       ORDER BY ${sort} ${order}, search_term ASC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, (page - 1) * pageSize]
+    );
+
+    const compareRanks = compareTable && rows.length ? await this.fetchCompareRanks(compareTable, rows.map((row) => row.search_term)) : new Map<string, number>();
+    return {
+      rows: rows.map((row) => {
+        const compareRank = compareRanks.get(row.search_term) ?? null;
+        const currentRank = nullableNumber(row.current_rank);
+        return {
+          keyword: row.search_term,
+          departmentName: row.department_name,
+          currentRank,
+          compareRank,
+          rankChange: currentRank !== null && compareRank !== null ? compareRank - currentRank : null,
+          changeType: changeTypeFor(currentRank, compareRank),
+          topProducts: wideProducts(row)
+        };
+      }),
+      page,
+      pageSize,
+      total,
+      weekStart: currentWeek.periodStart,
+      weekEnd: currentWeek.periodEnd,
+      compareWeekStart: compareTable ? compareWeek?.periodStart ?? null : null
+    };
+  }
+
+  private async fetchCompareRanks(compareTable: string, terms: string[]) {
+    const uniqueTerms = [...new Set(terms)];
+    const placeholders = uniqueTerms.map(() => "?").join(", ");
+    const rows = await this.mysql.query<CompareRankRow>(
+      `SELECT search_term, search_frequency_rank AS compare_rank
+       FROM ${quoteIdentifier(compareTable)}
+       WHERE search_term IN (${placeholders})`,
+      uniqueTerms
+    );
+    return new Map(rows.map((row) => [row.search_term, Number(row.compare_rank)]));
+  }
+
   private baseSql(currentTable: string, compareTable: string | null, isWideTable: boolean) {
     const current = quoteIdentifier(currentTable);
     const compareJoin = compareTable
@@ -230,7 +377,7 @@ export class AbaService {
            SELECT search_term, MIN(search_frequency_rank) AS compare_rank
            FROM ${quoteIdentifier(compareTable)}
            GROUP BY search_term
-         ) p ON p.search_term = c.search_term`
+         ) p ON ${sameTextExpression("p.search_term", "c.search_term")}`
       : "LEFT JOIN (SELECT NULL AS search_term, NULL AS compare_rank) p ON FALSE";
 
     return `
@@ -345,10 +492,50 @@ function normalizeDate(value: unknown) {
   return String(value).slice(0, 10);
 }
 
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function changeTypeFor(currentRank: number | null, compareRank: number | null): ChangeType {
+  if (compareRank === null) return "new";
+  if (currentRank === null) return "lost";
+  if (currentRank < compareRank) return "up";
+  if (currentRank > compareRank) return "down";
+  return "flat";
+}
+
+function wideProducts(row: WidePageRow): AbaTopProduct[] {
+  return [
+    {
+      asin: row.product1_asin,
+      itemName: row.product1_item_name,
+      clickShareRank: 1,
+      clickShare: nullableNumber(row.product1_click_share),
+      conversionShare: nullableNumber(row.product1_conversion_share)
+    },
+    {
+      asin: row.product2_asin,
+      itemName: row.product2_item_name,
+      clickShareRank: 2,
+      clickShare: nullableNumber(row.product2_click_share),
+      conversionShare: nullableNumber(row.product2_conversion_share)
+    },
+    {
+      asin: row.product3_asin,
+      itemName: row.product3_item_name,
+      clickShareRank: 3,
+      clickShare: nullableNumber(row.product3_click_share),
+      conversionShare: nullableNumber(row.product3_conversion_share)
+    }
+  ].filter((product) => product.asin || product.itemName);
 }
 
 function parseTopProducts(raw: string | AbaTopProduct[] | null): AbaTopProduct[] {
@@ -380,4 +567,8 @@ function termColumnExpression(_tableName: string) {
 
 function hasFullSchemaExpression(column: "report_end_date" | "marketplace_id") {
   return column === "report_end_date" ? "MIN(report_end_date)" : "MIN(marketplace_id)";
+}
+
+function sameTextExpression(left: string, right: string) {
+  return `${left} COLLATE utf8mb4_unicode_ci = ${right} COLLATE utf8mb4_unicode_ci`;
 }
