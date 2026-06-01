@@ -8,7 +8,7 @@ import json
 import time
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import ijson
 import pymysql
@@ -19,7 +19,8 @@ HOST = "https://openapi.lingxing.com"
 TOKEN_PATH = "/api/auth-server/oauth/access-token"
 ABA_REPORT_PATH = "/pb/openapi/newad/abaReport"
 BLOCK_SIZE = 16
-BATCH_SIZE = 5000
+BATCH_SIZE = 10000
+RECREATE_TABLE = True
 
 
 def pkcs5_pad(text: str) -> bytes:
@@ -213,27 +214,72 @@ def normalize_float(value: object) -> Optional[float]:
         return None
 
 
+def product_tuple(item: dict) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
+    return (
+        normalize_text(item.get("clickedAsin"), 50),
+        normalize_text(item.get("clickedItemName")),
+        normalize_float(item.get("clickShare")),
+        normalize_float(item.get("conversionShare")),
+    )
+
+
+def emit_group_row(meta: Dict[str, object], group: List[dict]) -> Optional[Tuple[object, ...]]:
+    if not group:
+        return None
+    first = group[0]
+    search_term = normalize_text(first.get("searchTerm"), 500)
+    rank = normalize_int(first.get("searchFrequencyRank"))
+    if not search_term or not rank:
+        return None
+
+    products = sorted(
+        group,
+        key=lambda item: normalize_int(item.get("clickShareRank")) if normalize_int(item.get("clickShareRank")) is not None else 999
+    )[:3]
+    product_values: List[object] = []
+    for index in range(3):
+        if index < len(products):
+            product_values.extend(product_tuple(products[index]))
+        else:
+            product_values.extend([None, None, None, None])
+
+    return (
+        meta["report_start_date"],
+        meta["report_end_date"],
+        meta["report_period"],
+        meta["marketplace_id"],
+        normalize_text(first.get("departmentName"), 255),
+        search_term,
+        rank,
+        *product_values,
+    )
+
+
 def iter_aba_rows(json_path: Path, meta: Dict[str, object]) -> Iterator[Tuple[object, ...]]:
+    """Yield one deduped row per searchTerm, preserving the top 3 clicked products."""
+    current_term: Optional[str] = None
+    group: List[dict] = []
     with json_path.open("rb") as file:
         for item in ijson.items(file, "dataByDepartmentAndSearchTerm.item"):
             search_term = normalize_text(item.get("searchTerm"), 500)
-            rank = normalize_int(item.get("searchFrequencyRank"))
-            if not search_term or not rank:
+            if not search_term:
                 continue
-            yield (
-                meta["report_start_date"],
-                meta["report_end_date"],
-                meta["report_period"],
-                meta["marketplace_id"],
-                normalize_text(item.get("departmentName"), 255),
-                search_term,
-                rank,
-                normalize_text(item.get("clickedAsin"), 50),
-                normalize_text(item.get("clickedItemName")),
-                normalize_int(item.get("clickShareRank")),
-                normalize_float(item.get("clickShare")),
-                normalize_float(item.get("conversionShare")),
-            )
+
+            if current_term is None:
+                current_term = search_term
+
+            if search_term != current_term:
+                row = emit_group_row(meta, group)
+                if row:
+                    yield row
+                current_term = search_term
+                group = []
+
+            group.append(item)
+
+    row = emit_group_row(meta, group)
+    if row:
+        yield row
 
 
 def mysql_connect():
@@ -267,6 +313,8 @@ def quote_identifier(name: str) -> str:
 
 def create_table_if_not_exists(conn, table_name: str):
     table = quote_identifier(table_name)
+    if RECREATE_TABLE:
+        run_ddl(conn, f"DROP TABLE IF EXISTS {table};")
     sql = f"""
     CREATE TABLE IF NOT EXISTS {table} (
         id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -277,25 +325,27 @@ def create_table_if_not_exists(conn, table_name: str):
         department_name VARCHAR(255),
         search_term VARCHAR(500) NOT NULL,
         search_frequency_rank INT NOT NULL,
-        clicked_asin VARCHAR(50),
-        clicked_item_name TEXT,
-        click_share_rank INT,
-        click_share DECIMAL(12, 6),
-        conversion_share DECIMAL(12, 6),
+        product1_asin VARCHAR(50),
+        product1_item_name TEXT,
+        product1_click_share DECIMAL(12, 6),
+        product1_conversion_share DECIMAL(12, 6),
+        product2_asin VARCHAR(50),
+        product2_item_name TEXT,
+        product2_click_share DECIMAL(12, 6),
+        product2_conversion_share DECIMAL(12, 6),
+        product3_asin VARCHAR(50),
+        product3_item_name TEXT,
+        product3_click_share DECIMAL(12, 6),
+        product3_conversion_share DECIMAL(12, 6),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY uk_report_term_product (report_start_date, search_term, click_share_rank, clicked_asin),
-        INDEX idx_search_term (search_term),
-        INDEX idx_rank (search_frequency_rank),
-        INDEX idx_asin (clicked_asin),
-        INDEX idx_click_rank (click_share_rank),
-        INDEX idx_report_start (report_start_date),
-        INDEX idx_term_rank (search_term, click_share_rank)
+        UNIQUE KEY uk_report_term (report_start_date, search_term)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
     with conn.cursor() as cursor:
         cursor.execute(sql)
-    migrate_table_if_needed(conn, table_name)
+    if not RECREATE_TABLE:
+        migrate_table_if_needed(conn, table_name)
 
 
 def column_exists(conn, table_name: str, column_name: str) -> bool:
@@ -393,22 +443,19 @@ def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> in
         department_name,
         search_term,
         search_frequency_rank,
-        clicked_asin,
-        clicked_item_name,
-        click_share_rank,
-        click_share,
-        conversion_share
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON DUPLICATE KEY UPDATE
-        report_end_date = VALUES(report_end_date),
-        report_period = VALUES(report_period),
-        marketplace_id = VALUES(marketplace_id),
-        department_name = VALUES(department_name),
-        search_frequency_rank = VALUES(search_frequency_rank),
-        clicked_item_name = VALUES(clicked_item_name),
-        click_share = VALUES(click_share),
-        conversion_share = VALUES(conversion_share),
-        updated_at = CURRENT_TIMESTAMP;
+        product1_asin,
+        product1_item_name,
+        product1_click_share,
+        product1_conversion_share,
+        product2_asin,
+        product2_item_name,
+        product2_click_share,
+        product2_conversion_share,
+        product3_asin,
+        product3_item_name,
+        product3_click_share,
+        product3_conversion_share
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     total = 0
     batch = []
@@ -424,7 +471,17 @@ def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> in
             cursor.executemany(sql, batch)
             total += len(batch)
             print(f"Inserted {total:,} rows...")
+    add_query_indexes(conn, table_name)
     return total
+
+
+def add_query_indexes(conn, table_name: str):
+    add_index_if_missing(conn, table_name, "idx_search_term", "INDEX idx_search_term (search_term)")
+    add_index_if_missing(conn, table_name, "idx_rank", "INDEX idx_rank (search_frequency_rank)")
+    add_index_if_missing(conn, table_name, "idx_product1_asin", "INDEX idx_product1_asin (product1_asin)")
+    add_index_if_missing(conn, table_name, "idx_product2_asin", "INDEX idx_product2_asin (product2_asin)")
+    add_index_if_missing(conn, table_name, "idx_product3_asin", "INDEX idx_product3_asin (product3_asin)")
+    add_index_if_missing(conn, table_name, "idx_report_start", "INDEX idx_report_start (report_start_date)")
 
 
 def main():

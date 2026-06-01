@@ -114,6 +114,7 @@ export class AbaService {
       return { rows: [], page, pageSize, total: 0, weekStart: currentWeek.periodStart, weekEnd: currentWeek.periodEnd, compareWeekStart: null };
     }
     const compareExists = compareTable ? await this.tableExists(compareTable) : false;
+    const isWideTable = await this.columnExists(currentTable, "product1_asin");
 
     const params: unknown[] = [];
     const where: string[] = [];
@@ -126,11 +127,19 @@ export class AbaService {
     if (query.excludeKeyword?.trim()) where.push(`LOWER(base.search_term) NOT LIKE LOWER(${add(`%${query.excludeKeyword.trim()}%`)})`);
     if (query.rankMin) where.push(`base.current_rank >= ${add(Number(query.rankMin))}`);
     if (query.rankMax) where.push(`base.current_rank <= ${add(Number(query.rankMax))}`);
-    if (query.asin?.trim()) where.push(`EXISTS (
-      SELECT 1 FROM ${quoteIdentifier(currentTable)} asin_filter
-      WHERE asin_filter.search_term = base.search_term
-        AND LOWER(asin_filter.clicked_asin) = LOWER(${add(query.asin.trim())})
-    )`);
+    if (query.asin?.trim()) {
+      where.push(
+        isWideTable
+          ? `(LOWER(base.product1_asin) = LOWER(${add(query.asin.trim())})
+              OR LOWER(base.product2_asin) = LOWER(${add(query.asin.trim())})
+              OR LOWER(base.product3_asin) = LOWER(${add(query.asin.trim())}))`
+          : `EXISTS (
+              SELECT 1 FROM ${quoteIdentifier(currentTable)} asin_filter
+              WHERE asin_filter.search_term = base.search_term
+                AND LOWER(asin_filter.clicked_asin) = LOWER(${add(query.asin.trim())})
+            )`
+      );
+    }
     if (query.clickShareMin) where.push(`base.max_click_share >= ${add(Number(query.clickShareMin) / 100)}`);
     if (query.clickShareMax) where.push(`base.max_click_share <= ${add(Number(query.clickShareMax) / 100)}`);
     if (query.conversionShareMin) where.push(`base.max_conversion_share >= ${add(Number(query.conversionShareMin) / 100)}`);
@@ -147,7 +156,8 @@ export class AbaService {
     } satisfies Record<NonNullable<AbaSearchQuery["sort"]>, string>;
     const sort = sortMap[query.sort ?? "rank"] ?? sortMap.rank;
     const order = query.order === "desc" ? "DESC" : "ASC";
-    const baseSql = this.baseSql(currentTable, compareExists ? compareTable : null);
+    const baseSql = this.baseSql(currentTable, compareExists ? compareTable : null, isWideTable);
+    const topProductsSql = isWideTable ? this.wideTopProductsSql() : this.narrowTopProductsSql(currentTable);
 
     const countRows = await this.mysql.query<CountRow>(`${baseSql} SELECT COUNT(*) AS total FROM base ${whereSql}`, params);
     const total = Number(countRows[0]?.total ?? 0);
@@ -161,22 +171,7 @@ export class AbaService {
          base.compare_rank,
          base.rank_change,
          base.change_type,
-         COALESCE((
-           SELECT JSON_ARRAYAGG(JSON_OBJECT(
-             'asin', ranked.clicked_asin,
-             'itemName', ranked.clicked_item_name,
-             'clickShareRank', ranked.click_share_rank,
-             'clickShare', ranked.click_share,
-             'conversionShare', ranked.conversion_share
-           ))
-           FROM (
-             SELECT clicked_asin, clicked_item_name, click_share_rank, click_share, conversion_share
-             FROM ${quoteIdentifier(currentTable)}
-             WHERE search_term = base.search_term
-             ORDER BY click_share_rank IS NULL, click_share_rank ASC
-             LIMIT 3
-           ) ranked
-         ), JSON_ARRAY()) AS top_products
+         ${topProductsSql} AS top_products
        FROM base
        ${whereSql}
        ORDER BY ${sort} ${order}, base.search_term ASC
@@ -215,7 +210,20 @@ export class AbaService {
     return rows.length > 0;
   }
 
-  private baseSql(currentTable: string, compareTable: string | null) {
+  private async columnExists(tableName: string, columnName: string) {
+    if (!isSafeAbaTableName(tableName)) return false;
+    const database = process.env.MYSQL_DATABASE ?? "lingxing";
+    const rows = await this.mysql.query<RowDataPacket>(
+      `SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = ? AND table_name = ? AND column_name = ?
+       LIMIT 1`,
+      [database, tableName, columnName]
+    );
+    return rows.length > 0;
+  }
+
+  private baseSql(currentTable: string, compareTable: string | null, isWideTable: boolean) {
     const current = quoteIdentifier(currentTable);
     const compareJoin = compareTable
       ? `LEFT JOIN (
@@ -231,8 +239,21 @@ export class AbaService {
           search_term,
           MIN(search_frequency_rank) AS current_rank,
           MIN(department_name) AS department_name,
-          MAX(click_share) AS max_click_share,
-          MAX(conversion_share) AS max_conversion_share
+          ${isWideTable ? "MAX(GREATEST(COALESCE(product1_click_share, 0), COALESCE(product2_click_share, 0), COALESCE(product3_click_share, 0)))" : "MAX(click_share)"} AS max_click_share,
+          ${isWideTable ? "MAX(GREATEST(COALESCE(product1_conversion_share, 0), COALESCE(product2_conversion_share, 0), COALESCE(product3_conversion_share, 0)))" : "MAX(conversion_share)"} AS max_conversion_share
+          ${isWideTable ? `,
+          MIN(product1_asin) AS product1_asin,
+          MIN(product1_item_name) AS product1_item_name,
+          MAX(product1_click_share) AS product1_click_share,
+          MAX(product1_conversion_share) AS product1_conversion_share,
+          MIN(product2_asin) AS product2_asin,
+          MIN(product2_item_name) AS product2_item_name,
+          MAX(product2_click_share) AS product2_click_share,
+          MAX(product2_conversion_share) AS product2_conversion_share,
+          MIN(product3_asin) AS product3_asin,
+          MIN(product3_item_name) AS product3_item_name,
+          MAX(product3_click_share) AS product3_click_share,
+          MAX(product3_conversion_share) AS product3_conversion_share` : ""}
         FROM ${current}
         GROUP BY search_term
       ),
@@ -254,9 +275,49 @@ export class AbaService {
           END AS change_type,
           COALESCE(c.max_click_share, 0) AS max_click_share,
           COALESCE(c.max_conversion_share, 0) AS max_conversion_share
+          ${isWideTable ? `,
+          c.product1_asin,
+          c.product1_item_name,
+          c.product1_click_share,
+          c.product1_conversion_share,
+          c.product2_asin,
+          c.product2_item_name,
+          c.product2_click_share,
+          c.product2_conversion_share,
+          c.product3_asin,
+          c.product3_item_name,
+          c.product3_click_share,
+          c.product3_conversion_share` : ""}
         FROM c
         ${compareJoin}
       )`;
+  }
+
+  private wideTopProductsSql() {
+    return `JSON_ARRAY(
+      JSON_OBJECT('asin', base.product1_asin, 'itemName', base.product1_item_name, 'clickShareRank', 1, 'clickShare', base.product1_click_share, 'conversionShare', base.product1_conversion_share),
+      JSON_OBJECT('asin', base.product2_asin, 'itemName', base.product2_item_name, 'clickShareRank', 2, 'clickShare', base.product2_click_share, 'conversionShare', base.product2_conversion_share),
+      JSON_OBJECT('asin', base.product3_asin, 'itemName', base.product3_item_name, 'clickShareRank', 3, 'clickShare', base.product3_click_share, 'conversionShare', base.product3_conversion_share)
+    )`;
+  }
+
+  private narrowTopProductsSql(currentTable: string) {
+    return `COALESCE((
+      SELECT JSON_ARRAYAGG(JSON_OBJECT(
+        'asin', ranked.clicked_asin,
+        'itemName', ranked.clicked_item_name,
+        'clickShareRank', ranked.click_share_rank,
+        'clickShare', ranked.click_share,
+        'conversionShare', ranked.conversion_share
+      ))
+      FROM (
+        SELECT clicked_asin, clicked_item_name, click_share_rank, click_share, conversion_share
+        FROM ${quoteIdentifier(currentTable)}
+        WHERE search_term = base.search_term
+        ORDER BY click_share_rank IS NULL, click_share_rank ASC
+        LIMIT 3
+      ) ranked
+    ), JSON_ARRAY())`;
   }
 }
 
