@@ -361,6 +361,7 @@ def migrate_table_if_needed(conn, table_name: str):
 
     if column_exists(conn, table_name, "report_date"):
         run_ddl(conn, f"UPDATE {table} SET report_start_date = COALESCE(report_start_date, report_date);")
+        run_ddl(conn, f"ALTER TABLE {table} MODIFY report_date DATE NULL;")
 
     run_ddl(conn, f"ALTER TABLE {table} MODIFY search_term VARCHAR(500) NOT NULL;")
     run_ddl(conn, f"ALTER TABLE {table} MODIFY report_start_date DATE NOT NULL;")
