@@ -93,6 +93,22 @@ export async function fetchAbaSearchTerms(params: Record<string, string | number
   });
 }
 
+export async function fetchAbaSearchTermsExport(params: Record<string, string | number | undefined>) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return getJson<AbaSearchTermsResponse>(`/api/aba/search-terms/export?${query.toString()}`, {
+    rows: [],
+    page: 1,
+    pageSize: Number(params.pageSize ?? 10000),
+    total: 0,
+    weekStart: null,
+    weekEnd: null,
+    compareWeekStart: null
+  });
+}
+
 export async function uploadImport(file: File, reportDate: string, onProgress?: (progress: number) => void) {
   const form = new FormData();
   form.append("file", file);

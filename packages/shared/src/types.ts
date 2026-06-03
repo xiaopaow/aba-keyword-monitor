@@ -124,10 +124,12 @@ export interface AbaTopProduct {
   clickShareRank: number | null;
   clickShare: number | null;
   conversionShare: number | null;
+  imageUrl?: string | null;
 }
 
 export interface AbaSearchTermRow {
   keyword: string;
+  keywordCnExplanation?: string | null;
   departmentName: string | null;
   currentRank: number | null;
   compareRank: number | null;

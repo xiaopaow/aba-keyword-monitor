@@ -214,9 +214,14 @@ def normalize_float(value: object) -> Optional[float]:
         return None
 
 
+def normalize_asin(value: object) -> Optional[str]:
+    text = normalize_text(value, 50)
+    return text.upper() if text else None
+
+
 def product_tuple(item: dict) -> Tuple[Optional[str], Optional[str], Optional[float], Optional[float]]:
     return (
-        normalize_text(item.get("clickedAsin"), 50),
+        normalize_asin(item.get("clickedAsin")),
         normalize_text(item.get("clickedItemName")),
         normalize_float(item.get("clickShare")),
         normalize_float(item.get("conversionShare")),
@@ -336,6 +341,7 @@ def create_table_if_not_exists(conn, table_name: str):
         department_name VARCHAR(255),
         search_term VARCHAR(500) NOT NULL,
         search_frequency_rank INT NOT NULL,
+        row_no BIGINT NULL,
         product1_asin VARCHAR(50),
         product1_item_name TEXT,
         product1_click_share DECIMAL(12, 6),
@@ -413,6 +419,7 @@ def migrate_table_if_needed(conn, table_name: str):
     add_column_if_missing(conn, table_name, "report_period", "VARCHAR(20) DEFAULT 'WEEK'")
     add_column_if_missing(conn, table_name, "marketplace_id", "VARCHAR(50) DEFAULT 'ATVPDKIKX0DER'")
     add_column_if_missing(conn, table_name, "department_name", "VARCHAR(255) NULL")
+    add_column_if_missing(conn, table_name, "row_no", "BIGINT NULL")
     add_column_if_missing(conn, table_name, "clicked_asin", "VARCHAR(50) NULL")
     add_column_if_missing(conn, table_name, "clicked_item_name", "TEXT NULL")
     add_column_if_missing(conn, table_name, "click_share_rank", "INT NULL")
@@ -424,7 +431,7 @@ def migrate_table_if_needed(conn, table_name: str):
         run_ddl(conn, f"UPDATE {table} SET report_start_date = COALESCE(report_start_date, report_date);")
         run_ddl(conn, f"ALTER TABLE {table} MODIFY report_date DATE NULL;")
 
-    run_ddl(conn, f"ALTER TABLE {table} MODIFY search_term VARCHAR(500) NOT NULL;")
+    run_ddl(conn, f"ALTER TABLE {table} MODIFY search_term VARCHAR(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL;")
     run_ddl(conn, f"ALTER TABLE {table} MODIFY report_start_date DATE NOT NULL;")
 
     # Old tables used UNIQUE(report_date, search_term), which prevents the 3 product rows per keyword.
@@ -437,10 +444,12 @@ def migrate_table_if_needed(conn, table_name: str):
     )
     add_index_if_missing(conn, table_name, "idx_search_term", "INDEX idx_search_term (search_term)")
     add_index_if_missing(conn, table_name, "idx_rank", "INDEX idx_rank (search_frequency_rank)")
+    add_index_if_missing(conn, table_name, "idx_rank_term", "INDEX idx_rank_term (search_frequency_rank, search_term)")
+    add_index_if_missing(conn, table_name, "idx_row_no", "INDEX idx_row_no (row_no)")
     add_index_if_missing(conn, table_name, "idx_asin", "INDEX idx_asin (clicked_asin)")
     add_index_if_missing(conn, table_name, "idx_click_rank", "INDEX idx_click_rank (click_share_rank)")
     add_index_if_missing(conn, table_name, "idx_report_start", "INDEX idx_report_start (report_start_date)")
-    add_index_if_missing(conn, table_name, "idx_term_rank", "INDEX idx_term_rank (search_term, click_share_rank)")
+    add_index_if_missing(conn, table_name, "idx_term_rank", "INDEX idx_term_rank (search_term, search_frequency_rank)")
 
 
 def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> int:
@@ -489,10 +498,31 @@ def insert_rows(conn, table_name: str, rows: Iterable[Tuple[object, ...]]) -> in
 def add_query_indexes(conn, table_name: str):
     add_index_if_missing(conn, table_name, "idx_search_term", "INDEX idx_search_term (search_term)")
     add_index_if_missing(conn, table_name, "idx_rank", "INDEX idx_rank (search_frequency_rank)")
+    add_index_if_missing(conn, table_name, "idx_rank_term", "INDEX idx_rank_term (search_frequency_rank, search_term)")
+    add_index_if_missing(conn, table_name, "idx_term_rank", "INDEX idx_term_rank (search_term, search_frequency_rank)")
+    add_index_if_missing(conn, table_name, "idx_row_no", "INDEX idx_row_no (row_no)")
     add_index_if_missing(conn, table_name, "idx_product1_asin", "INDEX idx_product1_asin (product1_asin)")
     add_index_if_missing(conn, table_name, "idx_product2_asin", "INDEX idx_product2_asin (product2_asin)")
     add_index_if_missing(conn, table_name, "idx_product3_asin", "INDEX idx_product3_asin (product3_asin)")
     add_index_if_missing(conn, table_name, "idx_report_start", "INDEX idx_report_start (report_start_date)")
+
+
+def rebuild_row_numbers(conn, table_name: str):
+    add_column_if_missing(conn, table_name, "row_no", "BIGINT NULL")
+    table = quote_identifier(table_name)
+    print("Building row_no index for fast deep page jumps...")
+    run_ddl(
+        conn,
+        f"""
+        UPDATE {table} t
+        JOIN (
+            SELECT id, ROW_NUMBER() OVER (ORDER BY search_frequency_rank ASC, search_term ASC) AS rn
+            FROM {table}
+        ) ranked ON ranked.id = t.id
+        SET t.row_no = ranked.rn;
+        """,
+    )
+    add_index_if_missing(conn, table_name, "idx_row_no", "INDEX idx_row_no (row_no)")
 
 
 def main():
@@ -529,6 +559,7 @@ def main():
 
         print("7) Streaming JSON rows into MySQL...")
         total = insert_rows(conn, table_name, iter_aba_rows(json_path, meta))
+        rebuild_row_numbers(conn, table_name)
     finally:
         conn.close()
 

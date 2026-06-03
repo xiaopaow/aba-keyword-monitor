@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ['*'],
   transpilePackages: ["@aba/shared"],
   async rewrites() {
     return [

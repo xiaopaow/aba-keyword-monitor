@@ -14,4 +14,9 @@ export class AbaController {
   searchTerms(@Query() query: any) {
     return this.aba.searchTerms(query);
   }
+
+  @Get("search-terms/export")
+  exportSearchTerms(@Query() query: any) {
+    return this.aba.exportSearchTerms(query);
+  }
 }
