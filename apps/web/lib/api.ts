@@ -1,21 +1,19 @@
 "use client";
 
-import type { AbaSearchTermsResponse, AbaWeek, ImportTask } from "@aba/shared";
-import {
-  mockAlerts,
-  mockCurrentRows,
-  mockDashboard,
-  mockImportTask,
-  mockKeywordRows,
-  mockOpportunities,
-  mockTrend
-} from "@aba/shared";
+import type { AbaSearchTermsResponse, AbaWeek, MemberUser } from "@aba/shared";
+import { getDeviceFingerprint } from "./device";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
 
 async function getJson<T>(path: string, fallback: T): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+    const response = await fetch(`${API_BASE}${path}`, {
+      cache: "no-store",
+      credentials: "include",
+      headers: {
+        "x-device-fingerprint": await getDeviceFingerprint()
+      }
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return (await response.json()) as T;
   } catch (error) {
@@ -24,53 +22,56 @@ async function getJson<T>(path: string, fallback: T): Promise<T> {
   }
 }
 
-export async function fetchDashboard(date = "2026-05-20", compareDate = "2026-05-19") {
-  return getJson(`/api/dashboard?date=${date}&compareDate=${compareDate}`, {
-    date,
-    compareDate,
-    summary: mockDashboard,
-    distribution: mockDashboard.distribution,
-    trend: mockTrend,
-    topUp: mockKeywordRows.filter((row) => (row.changeValue ?? 0) > 0).slice(0, 10),
-    topDown: mockKeywordRows.filter((row) => (row.changeValue ?? 0) < 0).slice(0, 10)
-  });
+async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "x-device-fingerprint": await getDeviceFingerprint()
+      },
+      body: JSON.stringify(body ?? {})
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()) as T;
+  } catch (error) {
+    console.error(`API request failed: ${path}`, error);
+    return fallback;
+  }
 }
 
-export async function fetchKeywords() {
-  return getJson("/api/keywords?date=2026-05-20&compareDate=2026-05-19&pageSize=100", {
-    rows: mockKeywordRows,
-    page: 1,
-    pageSize: 100,
-    total: mockKeywordRows.length
-  });
+export async function fetchCurrentMember() {
+  return getJson<MemberUser | null>("/api/auth/me", null);
 }
 
-export async function fetchKeyword(keyword: string) {
-  const row = mockKeywordRows.find((item) => item.keyword === keyword) ?? mockKeywordRows[0];
-  return getJson(`/api/keywords/${encodeURIComponent(keyword)}?date=2026-05-20`, {
-    ...row,
-    currentRank: row.currentRank,
-    yesterdayRank: row.compareRank,
-    sevenDayChange: 5400,
-    thirtyDayChange: 12000,
-    trend: mockTrend.slice(-14).map((point, index) => ({ date: point.date, rank: Math.max(1, (row.currentRank ?? 1000) + (14 - index) * 180) }))
-  });
+export async function loginMember(email: string, password: string) {
+  return postJson<MemberUser | null>(
+    "/api/auth/login",
+    { email, password, deviceFingerprint: await getDeviceFingerprint() },
+    null
+  );
 }
 
-export async function fetchOpportunities() {
-  return getJson("/api/opportunities?date=2026-05-20", { date: "2026-05-20", rows: mockOpportunities });
+export async function registerMember(email: string, password: string) {
+  return postJson<MemberUser | null>(
+    "/api/auth/register",
+    { email, password, deviceFingerprint: await getDeviceFingerprint() },
+    null
+  );
 }
 
-export async function fetchAlerts() {
-  return getJson("/api/alerts?date=2026-05-20", { date: "2026-05-20", rows: mockAlerts });
+export async function logoutMember() {
+  return postJson("/api/auth/logout", {}, { ok: false });
 }
 
-export async function fetchImportTask() {
-  return getJson("/api/import/tasks/1", mockImportTask);
+export async function createMemberOrder(plan: "basic" | "pro") {
+  return postJson<{ ok: boolean; orderNo?: string; status?: string } | null>("/api/auth/orders", { plan }, null);
 }
 
-export async function fetchImportTaskById(taskId: number) {
-  return getJson<ImportTask | null>(`/api/import/tasks/${taskId}`, null);
+export async function logKeywordCopy(payload: Record<string, unknown>) {
+  return postJson("/api/auth/copy-log", payload, { ok: false });
 }
 
 export async function fetchAbaWeeks() {
@@ -108,34 +109,3 @@ export async function fetchAbaSearchTermsExport(params: Record<string, string | 
     compareWeekStart: null
   });
 }
-
-export async function uploadImport(file: File, reportDate: string, onProgress?: (progress: number) => void) {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("reportDate", reportDate);
-
-  if (!onProgress) {
-    const response = await fetch(`${API_BASE}/api/import/upload`, { method: "POST", body: form });
-    if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
-    return response.json();
-  }
-
-  return new Promise<any>((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("POST", `${API_BASE}/api/import/upload`);
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
-    };
-    request.onload = () => {
-      if (request.status >= 200 && request.status < 300) {
-        resolve(JSON.parse(request.responseText));
-      } else {
-        reject(new Error(`Upload failed: ${request.status}`));
-      }
-    };
-    request.onerror = () => reject(new Error("Upload failed: network error"));
-    request.send(form);
-  });
-}
-
-export { mockCurrentRows };

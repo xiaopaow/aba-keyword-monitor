@@ -2,10 +2,9 @@
 
 import type { AbaSearchTermRow, AbaWeek, ChangeType } from "@aba/shared";
 import { Copy, Download, ExternalLink, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
-import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { Badge, Button, Card, Field, inputClass, PageHeader } from "../components/ui";
-import { fetchAbaSearchTerms, fetchAbaSearchTermsExport, fetchAbaWeeks } from "../lib/api";
+import { fetchAbaSearchTerms, fetchAbaSearchTermsExport, fetchAbaWeeks, logKeywordCopy } from "../lib/api";
 
 type FilterState = {
   keyword: string;
@@ -95,17 +94,6 @@ export default function AbaSearchTermsPage() {
   const compareWeek = weeks.find((week) => week.periodStart === compareWeekStart);
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
   const summary = useMemo(() => summarizeRows(data.rows), [data.rows]);
-  const resultActions = (
-    <ResultActions
-      loading={loading}
-      exporting={exporting}
-      hasRows={data.rows.length > 0}
-      copyMessage={copyMessage}
-      exportMessage={exportMessage}
-      onCopy={copyCurrentPageKeywords}
-      onExport={exportExcel}
-    />
-  );
 
   async function loadData(nextPage = page, nextPageSize = pageSize, nextFilters = appliedFilters) {
     setLoading(true);
@@ -151,6 +139,7 @@ export default function AbaSearchTermsPage() {
     const text = keywords.join("\n");
     try {
       await copyText(text);
+      await logKeywordCopy({ weekStart, compareWeekStart, page, pageSize, count: keywords.length });
       setCopyMessage(`已复制 ${keywords.length} 个关键词`);
     } catch {
       setCopyMessage("复制失败，请检查浏览器剪贴板权限");
@@ -403,19 +392,17 @@ export default function AbaSearchTermsPage() {
       </div>
 
       <Card>
-        <PaginationBar
+        <ResultToolbar
           page={page}
-          pageSize={pageSize}
           total={data.total}
           totalPages={totalPages}
           loading={loading}
-          jumpPage={jumpPage}
-          pageError={pageError}
-          onPageSize={changePageSize}
-          onJumpInput={setJumpPage}
-          onJump={goToPage}
-          onPage={setPage}
-          actions={resultActions}
+          exporting={exporting}
+          hasRows={data.rows.length > 0}
+          copyMessage={copyMessage}
+          exportMessage={exportMessage}
+          onCopy={copyCurrentPageKeywords}
+          onExport={exportExcel}
         />
         <div className="overflow-auto">
           <table className="w-full min-w-[1280px] text-sm">
@@ -438,7 +425,7 @@ export default function AbaSearchTermsPage() {
               {!data.rows.length && (
                 <tr>
                   <td className="px-4 py-16 text-center text-slate-500" colSpan={8}>
-                    {loading ? "正在加载..." : "还没有搜索词数据。请先确认后端已连接 MySQL，并且爬虫已经写入每周 ABA 表。"}
+                    {loading ? "正在加载..." : "还没有搜索词数据。请确认后端已连接 MySQL，并且 ABA 周报数据已经写入。"}
                   </td>
                 </tr>
               )}
@@ -448,7 +435,6 @@ export default function AbaSearchTermsPage() {
         <PaginationBar
           page={page}
           pageSize={pageSize}
-          total={data.total}
           totalPages={totalPages}
           loading={loading}
           jumpPage={jumpPage}
@@ -457,86 +443,16 @@ export default function AbaSearchTermsPage() {
           onJumpInput={setJumpPage}
           onJump={goToPage}
           onPage={setPage}
-          actions={resultActions}
-          compact
         />
       </Card>
     </>
   );
 }
 
-function PaginationBar({
+function ResultToolbar({
   page,
-  pageSize,
   total,
   totalPages,
-  loading,
-  jumpPage,
-  pageError,
-  actions,
-  compact = false,
-  onPageSize,
-  onJumpInput,
-  onJump,
-  onPage
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  totalPages: number;
-  loading: boolean;
-  jumpPage: string;
-  pageError: string;
-  actions?: ReactNode;
-  compact?: boolean;
-  onPageSize: (value: number) => void;
-  onJumpInput: (value: string) => void;
-  onJump: () => void;
-  onPage: (value: number) => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 last:border-b-0">
-      <div className="text-sm text-slate-500">
-        共 <span className="font-semibold text-foreground">{total.toLocaleString()}</span> 条结果，当前第 {page} / {totalPages.toLocaleString()} 页
-        {loading && <span className="ml-2 text-blue-600">加载中...</span>}
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        {actions}
-        <select className={inputClass} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
-          <option value={50}>50 条/页</option>
-          <option value={100}>100 条/页</option>
-          <option value={200}>200 条/页</option>
-        </select>
-        <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}>
-          上一页
-        </button>
-        <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page >= totalPages} onClick={() => onPage(page + 1)}>
-          下一页
-        </button>
-        <div className="flex items-center gap-2">
-          <input
-            className={`${inputClass} w-24`}
-            inputMode="numeric"
-            value={jumpPage}
-            onChange={(event) => onJumpInput(event.target.value.replace(/[^\d]/g, ""))}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") onJump();
-            }}
-            disabled={loading}
-            aria-label="跳转页码"
-          />
-          <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading} onClick={() => onJump()}>
-            跳转
-          </button>
-        </div>
-        {!compact && pageError && <span className="text-xs text-rose-600">{pageError}</span>}
-      </div>
-      {compact && pageError && <div className="w-full text-right text-xs text-rose-600">{pageError}</div>}
-    </div>
-  );
-}
-
-function ResultActions({
   loading,
   exporting,
   hasRows,
@@ -545,6 +461,9 @@ function ResultActions({
   onCopy,
   onExport
 }: {
+  page: number;
+  total: number;
+  totalPages: number;
   loading: boolean;
   exporting: boolean;
   hasRows: boolean;
@@ -554,30 +473,91 @@ function ResultActions({
   onExport: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <button
-        className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
-        disabled={loading || !hasRows}
-        onClick={onCopy}
-        title="复制当前页所有关键词"
-      >
-        <Copy className="h-4 w-4" />
-        复制关键词
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+      <div className="text-sm text-slate-500">
+        共 <span className="font-semibold text-foreground">{total.toLocaleString()}</span> 条结果，当前第 {page} / {totalPages.toLocaleString()} 页
+        {loading && <span className="ml-2 text-blue-600">加载中...</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
+          disabled={loading || !hasRows}
+          onClick={onCopy}
+          title="复制当前页所有关键词"
+        >
+          <Copy className="h-4 w-4" />
+          复制关键词
+        </button>
+        <button
+          className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
+          disabled={loading || exporting}
+          onClick={onExport}
+          title="按当前筛选条件导出前 10000 条"
+        >
+          <Download className="h-4 w-4" />
+          {exporting ? "导出中" : "导出 Excel"}
+        </button>
+        {(copyMessage || exportMessage) && (
+          <span className="max-w-[260px] truncate text-xs text-slate-500" title={copyMessage || exportMessage}>
+            {copyMessage || exportMessage}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PaginationBar({
+  page,
+  pageSize,
+  totalPages,
+  loading,
+  jumpPage,
+  pageError,
+  onPageSize,
+  onJumpInput,
+  onJump,
+  onPage
+}: {
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  loading: boolean;
+  jumpPage: string;
+  pageError: string;
+  onPageSize: (value: number) => void;
+  onJumpInput: (value: string) => void;
+  onJump: () => void;
+  onPage: (value: number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 text-sm">
+      <select className={`${inputClass} w-36`} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
+        <option value={50}>50 条/页</option>
+        <option value={100}>100 条/页</option>
+        <option value={200}>200 条/页</option>
+      </select>
+      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}>
+        上一页
       </button>
-      <button
-        className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
-        disabled={loading || exporting}
-        onClick={onExport}
-        title="按当前筛选条件导出前 10000 条"
-      >
-        <Download className="h-4 w-4" />
-        {exporting ? "导出中" : "导出 Excel"}
+      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page >= totalPages} onClick={() => onPage(page + 1)}>
+        下一页
       </button>
-      {(copyMessage || exportMessage) && (
-        <span className="max-w-[260px] truncate text-xs text-slate-500" title={copyMessage || exportMessage}>
-          {copyMessage || exportMessage}
-        </span>
-      )}
+      <input
+        className={`${inputClass} w-24`}
+        inputMode="numeric"
+        value={jumpPage}
+        onChange={(event) => onJumpInput(event.target.value.replace(/[^\d]/g, ""))}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onJump();
+        }}
+        disabled={loading}
+        aria-label="跳转页码"
+      />
+      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading} onClick={() => onJump()}>
+        跳转
+      </button>
+      {pageError && <div className="w-full text-right text-xs text-rose-600">{pageError}</div>}
     </div>
   );
 }
@@ -609,10 +589,7 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="text-xs text-slate-500">{label}</div>
-      <div
-        className={compact ? "mt-2 break-words text-[15px] font-semibold leading-snug" : "mt-2 truncate text-lg font-semibold"}
-        title={String(value)}
-      >
+      <div className={compact ? "mt-2 break-words text-[15px] font-semibold leading-snug" : "mt-2 truncate text-lg font-semibold"} title={String(value)}>
         {value}
       </div>
     </div>
@@ -679,9 +656,7 @@ function ProductCell({ product }: { product: AbaSearchTermRow["topProducts"][num
                 onError={() => setImageFailed(true)}
               />
             ) : (
-              <span className="flex h-28 items-center justify-center rounded border border-dashed border-border text-xs text-slate-500">
-                暂无图片
-              </span>
+              <span className="flex h-28 items-center justify-center rounded border border-dashed border-border text-xs text-slate-500">暂无图片</span>
             )}
             <span className="mt-2 block truncate text-xs font-medium text-foreground">{asin}</span>
           </span>

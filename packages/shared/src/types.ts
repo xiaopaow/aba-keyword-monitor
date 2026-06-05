@@ -125,6 +125,10 @@ export interface AbaTopProduct {
   clickShare: number | null;
   conversionShare: number | null;
   imageUrl?: string | null;
+  price?: number | null;
+  rating?: number | null;
+  reviewCount?: number | null;
+  detailUrl?: string | null;
 }
 
 export interface AbaSearchTermRow {
@@ -146,4 +150,14 @@ export interface AbaSearchTermsResponse {
   weekStart: string | null;
   weekEnd: string | null;
   compareWeekStart: string | null;
+  exportId?: string;
+}
+
+export interface MemberUser {
+  id: number;
+  email: string;
+  plan: "trial" | "basic" | "pro";
+  status: string;
+  expiresAt: string | null;
+  deviceBound: boolean;
 }
