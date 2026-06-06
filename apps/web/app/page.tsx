@@ -50,6 +50,8 @@ const changeTones: Record<ChangeType, "blue" | "green" | "red" | "yellow" | "sla
   flat: "slate"
 };
 
+type PageItem = number | "ellipsis";
+
 export default function AbaSearchTermsPage() {
   const [weeks, setWeeks] = useState<AbaWeek[]>([]);
   const [weekStart, setWeekStart] = useState("");
@@ -281,18 +283,6 @@ export default function AbaSearchTermsPage() {
       />
 
       <section className="mb-4 rounded-lg border border-border bg-card p-4">
-        <div className="mb-4 flex items-start gap-3 border-b border-border pb-4">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-rose-500 text-white">
-            <Search className="h-7 w-7" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold">ABA 搜索词周报</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              一行一个搜索词，#1/#2/#3 是 ABA 按 clickShareRank 给出的前三个点击商品 ASIN。新词/潜力词表示本周出现、对比周未出现。
-            </p>
-          </div>
-        </div>
-
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <Field label="选择站点">
             <select className={inputClass} disabled value="US">
@@ -376,7 +366,7 @@ export default function AbaSearchTermsPage() {
               <SlidersHorizontal className="h-4 w-4" />
               筛选
             </Button>
-            <button className="flex h-9 w-10 items-center justify-center rounded-md border border-border text-sm" onClick={resetFilters} title="清空筛选">
+            <button className="flex h-10 w-10 items-center justify-center rounded-lg border border-border text-sm" onClick={resetFilters} title="清空筛选">
               <RotateCcw className="h-4 w-4" />
             </button>
           </div>
@@ -530,21 +520,52 @@ function PaginationBar({
   onJump: () => void;
   onPage: (value: number) => void;
 }) {
+  const items = paginationItems(page, totalPages);
   return (
     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 text-sm">
-      <select className={`${inputClass} w-36`} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
+      <button
+        className="grid h-9 min-w-9 place-items-center rounded-md border border-border px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={loading || page <= 1}
+        onClick={() => onPage(page - 1)}
+      >
+        上一页
+      </button>
+      <div className="flex items-center gap-1">
+        {items.map((item, index) =>
+          item === "ellipsis" ? (
+            <span key={`ellipsis-${index}`} className="grid h-9 min-w-9 place-items-center text-slate-400">
+              ...
+            </span>
+          ) : (
+            <button
+              key={item}
+              className={`grid h-9 min-w-9 place-items-center rounded-md border px-3 transition ${
+                item === page
+                  ? "border-orange-500 bg-orange-50 font-bold text-orange-600"
+                  : "border-border text-slate-600 hover:border-orange-200 hover:text-orange-600"
+              }`}
+              disabled={loading || item === page}
+              onClick={() => onPage(item)}
+            >
+              {item}
+            </button>
+          )
+        )}
+      </div>
+      <button
+        className="grid h-9 min-w-9 place-items-center rounded-md border border-border px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+        disabled={loading || page >= totalPages}
+        onClick={() => onPage(page + 1)}
+      >
+        下一页
+      </button>
+      <select className={`${inputClass} w-32`} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
         <option value={50}>50 条/页</option>
         <option value={100}>100 条/页</option>
         <option value={200}>200 条/页</option>
       </select>
-      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}>
-        上一页
-      </button>
-      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading || page >= totalPages} onClick={() => onPage(page + 1)}>
-        下一页
-      </button>
       <input
-        className={`${inputClass} w-24`}
+        className={`${inputClass} w-20`}
         inputMode="numeric"
         value={jumpPage}
         onChange={(event) => onJumpInput(event.target.value.replace(/[^\d]/g, ""))}
@@ -554,12 +575,33 @@ function PaginationBar({
         disabled={loading}
         aria-label="跳转页码"
       />
-      <button className="h-9 rounded-md border border-border px-3 disabled:opacity-50" disabled={loading} onClick={() => onJump()}>
+      <button className="h-9 rounded-md bg-orange-500 px-4 font-bold text-white transition hover:bg-orange-600 disabled:opacity-50" disabled={loading} onClick={() => onJump()}>
         跳转
       </button>
       {pageError && <div className="w-full text-right text-xs text-rose-600">{pageError}</div>}
     </div>
   );
+}
+
+function paginationItems(page: number, totalPages: number): PageItem[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  const items = new Set<number>([1, totalPages, page, page - 1, page + 1]);
+  if (page <= 4) {
+    [2, 3, 4, 5].forEach((item) => items.add(item));
+  }
+  if (page >= totalPages - 3) {
+    [totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1].forEach((item) => items.add(item));
+  }
+  const sorted = [...items].filter((item) => item >= 1 && item <= totalPages).sort((a, b) => a - b);
+  const output: PageItem[] = [];
+  for (const item of sorted) {
+    const previous = output[output.length - 1];
+    if (typeof previous === "number" && item - previous > 1) {
+      output.push("ellipsis");
+    }
+    output.push(item);
+  }
+  return output;
 }
 
 function RangeField({

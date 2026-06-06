@@ -14,8 +14,9 @@ async function getJson<T>(path: string, fallback: T): Promise<T> {
         "x-device-fingerprint": await getDeviceFingerprint()
       }
     });
+    if (response.status === 401 || response.status === 403 || response.status === 204) return fallback;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as T;
+    return parseJson(response, fallback);
   } catch (error) {
     console.error(`API request failed: ${path}`, error);
     return fallback;
@@ -34,12 +35,19 @@ async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T>
       },
       body: JSON.stringify(body ?? {})
     });
+    if (response.status === 401 || response.status === 403 || response.status === 204) return fallback;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as T;
+    return parseJson(response, fallback);
   } catch (error) {
     console.error(`API request failed: ${path}`, error);
     return fallback;
   }
+}
+
+async function parseJson<T>(response: Response, fallback: T): Promise<T> {
+  const text = await response.text();
+  if (!text.trim()) return fallback;
+  return JSON.parse(text) as T;
 }
 
 export async function fetchCurrentMember() {
