@@ -287,8 +287,10 @@ function AbaSearchTermsContent() {
   }
 
   function changePageSize(value: number) {
+    const firstRowIndex = (page - 1) * pageSize + 1;
+    const nextPage = Math.max(1, Math.ceil(firstRowIndex / value));
     setPageSize(value);
-    setPage(1);
+    setPage(nextPage);
   }
 
   function goToPage(rawValue = jumpPage) {
@@ -599,13 +601,13 @@ function PaginationBar({
       >
         下一页
       </button>
-      <select className={`${inputClass} w-32`} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
+      <select className={`${inputClass} !w-32 flex-none`} value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))} disabled={loading}>
         <option value={50}>50 条/页</option>
         <option value={100}>100 条/页</option>
         <option value={200}>200 条/页</option>
       </select>
       <input
-        className={`${inputClass} w-20`}
+        className={`${inputClass} !w-20 flex-none`}
         inputMode="numeric"
         value={jumpPage}
         onChange={(event) => onJumpInput(event.target.value.replace(/[^\d]/g, ""))}
