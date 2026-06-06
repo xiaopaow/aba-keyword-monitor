@@ -173,6 +173,17 @@ function AbaSearchTermsContent() {
     }
   }
 
+  async function copySingleKeyword(keyword: string) {
+    setCopyMessage("");
+    try {
+      await copyText(keyword);
+      await logKeywordCopy({ weekStart, compareWeekStart, page, pageSize, count: 1, keyword });
+      setCopyMessage(`已复制：${keyword}`);
+    } catch {
+      setCopyMessage("复制失败，请检查浏览器剪贴板权限");
+    }
+  }
+
   async function exportExcel() {
     if (!weekStart || exporting) return;
     setExporting(true);
@@ -439,7 +450,7 @@ function AbaSearchTermsContent() {
             </thead>
             <tbody>
               {data.rows.map((row) => (
-                <SearchTermRow key={row.keyword} row={row} />
+                <SearchTermRow key={row.keyword} row={row} onCopyKeyword={copySingleKeyword} />
               ))}
               {!data.rows.length && (
                 <tr>
@@ -667,12 +678,36 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
   );
 }
 
-function SearchTermRow({ row }: { row: AbaSearchTermRow }) {
+function SearchTermRow({ row, onCopyKeyword }: { row: AbaSearchTermRow; onCopyKeyword: (keyword: string) => void }) {
   const explanation = row.keywordCnExplanation?.trim() || "待生成中文解释";
+  const amazonSearchUrl = amazonSearchHref(row.keyword);
   return (
     <tr className="border-t border-border align-top text-foreground">
       <td className="max-w-[260px] px-4 py-4">
-        <div className="font-semibold">{row.keyword}</div>
+        <div className="group/keyword flex items-center gap-1.5">
+          <a
+            className="font-semibold text-slate-950 transition hover:text-sky-700 hover:underline dark:text-slate-100 dark:hover:text-sky-300"
+            href={amazonSearchUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={`在 Amazon 搜索：${row.keyword}`}
+          >
+            {row.keyword}
+          </a>
+          <button
+            type="button"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded border border-transparent text-slate-300 opacity-70 transition hover:border-sky-100 hover:bg-sky-50 hover:text-sky-700 group-hover/keyword:text-slate-500 dark:text-slate-600 dark:hover:border-sky-900 dark:hover:bg-sky-950 dark:hover:text-sky-300 dark:group-hover/keyword:text-slate-400"
+            title={`复制关键词：${row.keyword}`}
+            aria-label={`复制关键词：${row.keyword}`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCopyKeyword(row.keyword);
+            }}
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{explanation}</div>
       </td>
       <td className="px-4 py-4 text-right font-medium">{formatRank(row.currentRank)}</td>
@@ -742,6 +777,11 @@ function ProductCell({ product }: { product: AbaSearchTermRow["topProducts"][num
 
 function readableChangeType(value: ChangeType) {
   return changeLabels[value] ?? value;
+}
+
+function amazonSearchHref(keyword: string) {
+  const query = encodeURIComponent(keyword.trim()).replaceAll("%20", "+");
+  return `https://www.amazon.com/s?k=${query}`;
 }
 
 async function copyText(text: string) {
