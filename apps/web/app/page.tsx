@@ -2,7 +2,8 @@
 
 import type { AbaSearchTermRow, AbaWeek, ChangeType } from "@aba/shared";
 import { Copy, Download, ExternalLink, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, Field, inputClass, PageHeader } from "../components/ui";
 import { fetchAbaSearchTerms, fetchAbaSearchTermsExport, fetchAbaWeeks, logKeywordCopy } from "../lib/api";
 
@@ -53,14 +54,25 @@ const changeTones: Record<ChangeType, "blue" | "green" | "red" | "yellow" | "sla
 type PageItem = number | "ellipsis";
 
 export default function AbaSearchTermsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AbaSearchTermsContent />
+    </Suspense>
+  );
+}
+
+function AbaSearchTermsContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialCompareSpecified = useRef(searchParams.has("compareWeekStart"));
   const [weeks, setWeeks] = useState<AbaWeek[]>([]);
-  const [weekStart, setWeekStart] = useState("");
-  const [compareWeekStart, setCompareWeekStart] = useState("");
-  const [draftFilters, setDraftFilters] = useState<FilterState>(emptyFilters);
-  const [appliedFilters, setAppliedFilters] = useState<FilterState>(emptyFilters);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [jumpPage, setJumpPage] = useState("1");
+  const [weekStart, setWeekStart] = useState(() => searchParams.get("weekStart") ?? "");
+  const [compareWeekStart, setCompareWeekStart] = useState(() => searchParams.get("compareWeekStart") ?? "");
+  const [draftFilters, setDraftFilters] = useState<FilterState>(() => filtersFromParams(searchParams));
+  const [appliedFilters, setAppliedFilters] = useState<FilterState>(() => filtersFromParams(searchParams));
+  const [page, setPage] = useState(() => positiveInteger(searchParams.get("page"), 1));
+  const [pageSize, setPageSize] = useState(() => pageSizeFromParams(searchParams.get("pageSize")));
+  const [jumpPage, setJumpPage] = useState(() => String(positiveInteger(searchParams.get("page"), 1)));
   const [data, setData] = useState({
     rows: [] as AbaSearchTermRow[],
     total: 0,
@@ -78,7 +90,7 @@ export default function AbaSearchTermsPage() {
     fetchAbaWeeks().then((items) => {
       setWeeks(items);
       setWeekStart((value) => value || items[0]?.periodStart || "");
-      setCompareWeekStart((value) => value || items[1]?.periodStart || "");
+      setCompareWeekStart((value) => value || (initialCompareSpecified.current ? "" : items[1]?.periodStart || ""));
     });
   }, []);
 
@@ -96,6 +108,19 @@ export default function AbaSearchTermsPage() {
   const compareWeek = weeks.find((week) => week.periodStart === compareWeekStart);
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
   const summary = useMemo(() => summarizeRows(data.rows), [data.rows]);
+  const searchUrl = useMemo(
+    () => buildSearchUrl({ weekStart, compareWeekStart, filters: appliedFilters, page, pageSize }),
+    [weekStart, compareWeekStart, appliedFilters, page, pageSize]
+  );
+
+  useEffect(() => {
+    if (!weekStart) return;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (currentUrl !== searchUrl) {
+      router.replace(searchUrl, { scroll: false });
+    }
+    window.localStorage.setItem("deepwhale-last-search-url", searchUrl);
+  }, [router, searchUrl, weekStart]);
 
   async function loadData(nextPage = page, nextPageSize = pageSize, nextFilters = appliedFilters) {
     setLoading(true);
@@ -282,7 +307,7 @@ export default function AbaSearchTermsPage() {
         }
       />
 
-      <section className="mb-4 rounded-lg border border-border bg-card p-4">
+      <section className="mb-4 rounded-lg border border-border bg-card p-4 shadow-sm">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <Field label="选择站点">
             <select className={inputClass} disabled value="US">
@@ -366,7 +391,11 @@ export default function AbaSearchTermsPage() {
               <SlidersHorizontal className="h-4 w-4" />
               筛选
             </Button>
-            <button className="flex h-10 w-10 items-center justify-center rounded-lg border border-border text-sm" onClick={resetFilters} title="清空筛选">
+            <button
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-card text-sm text-slate-600 transition hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={resetFilters}
+              title="清空筛选"
+            >
               <RotateCcw className="h-4 w-4" />
             </button>
           </div>
@@ -396,7 +425,7 @@ export default function AbaSearchTermsPage() {
         />
         <div className="overflow-auto">
           <table className="w-full min-w-[1280px] text-sm">
-            <thead className="bg-slate-100 text-xs text-slate-500 dark:bg-slate-800">
+            <thead className="bg-slate-100 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-300">
               <tr>
                 <th className="px-4 py-3 text-left">搜索词</th>
                 <th className="px-4 py-3 text-right">搜索排名</th>
@@ -414,7 +443,7 @@ export default function AbaSearchTermsPage() {
               ))}
               {!data.rows.length && (
                 <tr>
-                  <td className="px-4 py-16 text-center text-slate-500" colSpan={8}>
+                  <td className="px-4 py-16 text-center text-slate-500 dark:text-slate-400" colSpan={8}>
                     {loading ? "正在加载..." : "还没有搜索词数据。请确认后端已连接 MySQL，并且 ABA 周报数据已经写入。"}
                   </td>
                 </tr>
@@ -464,13 +493,13 @@ function ResultToolbar({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-      <div className="text-sm text-slate-500">
+      <div className="text-sm text-slate-500 dark:text-slate-400">
         共 <span className="font-semibold text-foreground">{total.toLocaleString()}</span> 条结果，当前第 {page} / {totalPages.toLocaleString()} 页
-        {loading && <span className="ml-2 text-blue-600">加载中...</span>}
+        {loading && <span className="ml-2 text-blue-600 dark:text-sky-300">加载中...</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button
-          className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
+          className="inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
           disabled={loading || !hasRows}
           onClick={onCopy}
           title="复制当前页所有关键词"
@@ -479,7 +508,7 @@ function ResultToolbar({
           复制关键词
         </button>
         <button
-          className="inline-flex h-9 items-center gap-1 rounded-md border border-border px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
+          className="inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-800"
           disabled={loading || exporting}
           onClick={onExport}
           title="按当前筛选条件导出前 10000 条"
@@ -488,7 +517,7 @@ function ResultToolbar({
           {exporting ? "导出中" : "导出 Excel"}
         </button>
         {(copyMessage || exportMessage) && (
-          <span className="max-w-[260px] truncate text-xs text-slate-500" title={copyMessage || exportMessage}>
+          <span className="max-w-[260px] truncate text-xs text-slate-500 dark:text-slate-400" title={copyMessage || exportMessage}>
             {copyMessage || exportMessage}
           </span>
         )}
@@ -524,7 +553,7 @@ function PaginationBar({
   return (
     <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 text-sm">
       <button
-        className="grid h-9 min-w-9 place-items-center rounded-md border border-border px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+        className="grid h-9 min-w-9 place-items-center rounded-md border border-border bg-card px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-300 dark:hover:border-orange-800 dark:hover:text-orange-300"
         disabled={loading || page <= 1}
         onClick={() => onPage(page - 1)}
       >
@@ -533,7 +562,7 @@ function PaginationBar({
       <div className="flex items-center gap-1">
         {items.map((item, index) =>
           item === "ellipsis" ? (
-            <span key={`ellipsis-${index}`} className="grid h-9 min-w-9 place-items-center text-slate-400">
+            <span key={`ellipsis-${index}`} className="grid h-9 min-w-9 place-items-center text-slate-400 dark:text-slate-500">
               ...
             </span>
           ) : (
@@ -541,8 +570,8 @@ function PaginationBar({
               key={item}
               className={`grid h-9 min-w-9 place-items-center rounded-md border px-3 transition ${
                 item === page
-                  ? "border-orange-500 bg-orange-50 font-bold text-orange-600"
-                  : "border-border text-slate-600 hover:border-orange-200 hover:text-orange-600"
+                  ? "border-orange-500 bg-orange-50 font-bold text-orange-600 dark:bg-orange-950 dark:text-orange-200"
+                  : "border-border bg-card text-slate-600 hover:border-orange-200 hover:text-orange-600 dark:text-slate-300 dark:hover:border-orange-800 dark:hover:text-orange-300"
               }`}
               disabled={loading || item === page}
               onClick={() => onPage(item)}
@@ -553,7 +582,7 @@ function PaginationBar({
         )}
       </div>
       <button
-        className="grid h-9 min-w-9 place-items-center rounded-md border border-border px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40"
+        className="grid h-9 min-w-9 place-items-center rounded-md border border-border bg-card px-3 text-slate-500 transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-300 dark:hover:border-orange-800 dark:hover:text-orange-300"
         disabled={loading || page >= totalPages}
         onClick={() => onPage(page + 1)}
       >
@@ -578,7 +607,7 @@ function PaginationBar({
       <button className="h-9 rounded-md bg-orange-500 px-4 font-bold text-white transition hover:bg-orange-600 disabled:opacity-50" disabled={loading} onClick={() => onJump()}>
         跳转
       </button>
-      {pageError && <div className="w-full text-right text-xs text-rose-600">{pageError}</div>}
+      {pageError && <div className="w-full text-right text-xs text-rose-600 dark:text-rose-300">{pageError}</div>}
     </div>
   );
 }
@@ -630,7 +659,7 @@ function RangeField({
 function Metric({ label, value, compact = false }: { label: string; value: string | number; compact?: boolean }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
-      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
       <div className={compact ? "mt-2 break-words text-[15px] font-semibold leading-snug" : "mt-2 truncate text-lg font-semibold"} title={String(value)}>
         {value}
       </div>
@@ -641,10 +670,10 @@ function Metric({ label, value, compact = false }: { label: string; value: strin
 function SearchTermRow({ row }: { row: AbaSearchTermRow }) {
   const explanation = row.keywordCnExplanation?.trim() || "待生成中文解释";
   return (
-    <tr className="border-t border-border align-top">
+    <tr className="border-t border-border align-top text-foreground">
       <td className="max-w-[260px] px-4 py-4">
         <div className="font-semibold">{row.keyword}</div>
-        <div className="mt-1 text-xs text-slate-500">{explanation}</div>
+        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{explanation}</div>
       </td>
       <td className="px-4 py-4 text-right font-medium">{formatRank(row.currentRank)}</td>
       <td className="px-4 py-4 text-right">{formatRank(row.compareRank)}</td>
@@ -669,7 +698,7 @@ function ProductCell({ product }: { product: AbaSearchTermRow["topProducts"][num
     setImageFailed(false);
   }, [imageUrl]);
 
-  if (!product) return <span className="text-slate-400">-</span>;
+  if (!product) return <span className="text-slate-400 dark:text-slate-500">-</span>;
   const asin = product.asin?.trim().toUpperCase();
   const showImage = Boolean(imageUrl && !imageFailed);
   return (
@@ -680,7 +709,7 @@ function ProductCell({ product }: { product: AbaSearchTermRow["topProducts"][num
       {asin && (
         <span className="group relative inline-flex">
           <a
-            className="inline-flex items-center gap-1 font-medium text-blue-600 hover:underline"
+            className="inline-flex items-center gap-1 font-medium text-blue-600 hover:underline dark:text-sky-300"
             href={`https://www.amazon.com/dp/${encodeURIComponent(asin)}?psc=1`}
             target="_blank"
             rel="noreferrer"
@@ -698,13 +727,13 @@ function ProductCell({ product }: { product: AbaSearchTermRow["topProducts"][num
                 onError={() => setImageFailed(true)}
               />
             ) : (
-              <span className="flex h-28 items-center justify-center rounded border border-dashed border-border text-xs text-slate-500">暂无图片</span>
+              <span className="flex h-28 items-center justify-center rounded border border-dashed border-border text-xs text-slate-500 dark:text-slate-400">暂无图片</span>
             )}
             <span className="mt-2 block truncate text-xs font-medium text-foreground">{asin}</span>
           </span>
         </span>
       )}
-      <div className="text-xs text-slate-500">
+      <div className="text-xs text-slate-500 dark:text-slate-400">
         点击：{formatPercent(product.clickShare)}　转化：{formatPercent(product.conversionShare)}
       </div>
     </div>
@@ -753,6 +782,87 @@ function downloadBlob(blob: Blob, fileName: string) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+type SearchParamReader = {
+  get: (name: string) => string | null;
+  has: (name: string) => boolean;
+};
+
+function filtersFromParams(params: SearchParamReader): FilterState {
+  const changeType = params.get("changeType");
+  const sort = params.get("sort");
+  return {
+    keyword: params.get("keyword") ?? "",
+    excludeKeyword: params.get("excludeKeyword") ?? "",
+    asin: params.get("asin") ?? "",
+    rankMin: params.get("rankMin") ?? "",
+    rankMax: params.get("rankMax") ?? "",
+    clickShareMin: params.get("clickShareMin") ?? "",
+    clickShareMax: params.get("clickShareMax") ?? "",
+    conversionShareMin: params.get("conversionShareMin") ?? "",
+    conversionShareMax: params.get("conversionShareMax") ?? "",
+    changeType: isChangeType(changeType) ? changeType : "all",
+    sort: isSortType(sort) ? sort : "rank"
+  };
+}
+
+function buildSearchUrl({
+  weekStart,
+  compareWeekStart,
+  filters,
+  page,
+  pageSize
+}: {
+  weekStart: string;
+  compareWeekStart: string;
+  filters: FilterState;
+  page: number;
+  pageSize: number;
+}) {
+  const params = new URLSearchParams();
+  if (weekStart) params.set("weekStart", weekStart);
+  params.set("compareWeekStart", compareWeekStart);
+  params.set("changeType", filters.changeType);
+  params.set("sort", filters.sort);
+  params.set("page", String(page));
+  params.set("pageSize", String(pageSize));
+
+  const optionalFields: Array<keyof FilterState> = [
+    "keyword",
+    "excludeKeyword",
+    "asin",
+    "rankMin",
+    "rankMax",
+    "clickShareMin",
+    "clickShareMax",
+    "conversionShareMin",
+    "conversionShareMax"
+  ];
+  for (const field of optionalFields) {
+    const value = String(filters[field] ?? "").trim();
+    if (value) params.set(field, value);
+  }
+
+  return `/?${params.toString()}`;
+}
+
+function positiveInteger(value: string | null, fallback: number) {
+  const next = Number(value);
+  return Number.isInteger(next) && next > 0 ? next : fallback;
+}
+
+function pageSizeFromParams(value: string | null) {
+  const next = positiveInteger(value, 50);
+  return [50, 100, 200].includes(next) ? next : 50;
+}
+
+function isChangeType(value: string | null): value is FilterState["changeType"] {
+  return value === "all" || value === "new" || value === "lost" || value === "up" || value === "down" || value === "flat";
+}
+
+function isSortType(value: string | null): value is FilterState["sort"] {
+  return value === "rank" || value === "rankChange" || value === "clickShare" || value === "conversionShare" || value === "keyword";
 }
 
 function summarizeRows(rows: AbaSearchTermRow[]) {

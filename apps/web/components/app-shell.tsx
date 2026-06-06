@@ -43,6 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [darkMode, setDarkMode] = useState(false);
+  const [searchHref, setSearchHref] = useState("/");
 
   useEffect(() => {
     fetchCurrentMember()
@@ -57,6 +58,11 @@ export function AppShell({ children }: { children: ReactNode }) {
     setDarkMode(nextDark);
     document.documentElement.classList.toggle("dark", nextDark);
   }, []);
+
+  useEffect(() => {
+    const savedSearch = window.localStorage.getItem("deepwhale-last-search-url");
+    if (savedSearch?.startsWith("/")) setSearchHref(savedSearch);
+  }, [pathname]);
 
   function toggleTheme() {
     setDarkMode((current) => {
@@ -101,7 +107,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       }
       setMember(result.data);
       setAuthOpen(false);
-      window.location.reload();
     } finally {
       setSubmitting(false);
     }
@@ -120,7 +125,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               return (
                 <Link
                   key={item.href}
-                  href={item.href}
+                  href={item.href === "/" ? searchHref : item.href}
                   className={clsx(
                     "inline-flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition",
                     activeItem
