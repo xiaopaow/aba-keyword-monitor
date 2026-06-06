@@ -34,6 +34,7 @@ export interface AuthenticatedUser {
 
 const SESSION_COOKIE = "aba_session";
 const SESSION_DAYS = 7;
+const DEMO_PRO_EMAIL = "demo@deepwhale.local";
 
 const PLAN_LIMITS: Record<
   MembershipPlan,
@@ -64,7 +65,7 @@ export class AuthService implements OnModuleInit {
     }
 
     this.assertMemberCanAccess(user);
-    await this.assertOrBindDevice(user, deviceFingerprint, req);
+    await this.assertOrBindDevice(user, deviceFingerprint, req, normalizedEmail === DEMO_PRO_EMAIL);
 
     const plainToken = randomBytes(32).toString("base64url");
     const tokenHash = hashToken(plainToken);
@@ -93,7 +94,7 @@ export class AuthService implements OnModuleInit {
   async register(email: string, password: string, deviceFingerprint: string, req: Request, res: Response) {
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail.includes("@")) throw new ForbiddenException("Valid email required.");
-    if (!password || password.length < 8) throw new ForbiddenException("Password must be at least 8 characters.");
+    if (!password || password.length < 6) throw new ForbiddenException("Password must be at least 6 characters.");
 
     const existing = await this.findUserByEmail(normalizedEmail);
     if (existing) throw new ForbiddenException("Email already registered.");
@@ -345,7 +346,7 @@ export class AuthService implements OnModuleInit {
   }
 
   private async seedDemoProUser() {
-    const email = "demo@deepwhale.local";
+    const email = DEMO_PRO_EMAIL;
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
     await this.mysql.connection(async (connection) => {
       await connection.execute(
@@ -376,7 +377,7 @@ export class AuthService implements OnModuleInit {
     }
   }
 
-  private async assertOrBindDevice(user: UserRow, deviceFingerprint: string, req: Request) {
+  private async assertOrBindDevice(user: UserRow, deviceFingerprint: string, req: Request, allowRebind = false) {
     if (!deviceFingerprint || deviceFingerprint.length < 16) {
       throw new ForbiddenException("Valid device fingerprint required.");
     }
@@ -391,6 +392,16 @@ export class AuthService implements OnModuleInit {
       return;
     }
     if (user.device_fingerprint !== deviceFingerprint) {
+      if (allowRebind) {
+        await this.mysql.connection(async (connection) => {
+          await connection.execute("UPDATE aba_members SET device_fingerprint = ?, device_bound_at = NOW() WHERE id = ?", [
+            deviceFingerprint,
+            user.id
+          ]);
+        });
+        await this.logAccess(user.id, "rebind_device", req, { deviceFingerprint });
+        return;
+      }
       await this.logAccess(user.id, "device_mismatch", req, { deviceFingerprint }, "blocked", "device_mismatch");
       throw new ForbiddenException("This account is bound to another device.");
     }
