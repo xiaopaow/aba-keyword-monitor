@@ -13,21 +13,26 @@ export class AbaController {
   ) {}
 
   @Get("weeks")
-  weeks() {
-    return this.aba.weeks();
+  async weeks(@Req() req: Request) {
+    const user = getAuthenticatedUser(req);
+    const visibleLimit = this.auth.getVisibleDataDepth(user.plan);
+    const weeks = await this.aba.weeks();
+    if (visibleLimit === null) return weeks;
+    return weeks.map((week) => ({ ...week, totalTerms: Math.min(week.totalTerms, visibleLimit) }));
   }
 
   @Get("search-terms")
   async searchTerms(@Query() query: any, @Req() req: Request) {
-    await this.auth.consumeQuota(getAuthenticatedUser(req), "query", req, query);
-    return this.aba.searchTerms(query);
+    const user = getAuthenticatedUser(req);
+    await this.auth.consumeQuota(user, "query", req, query);
+    return this.aba.searchTerms(query, this.auth.getVisibleDataDepth(user.plan));
   }
 
   @Get("search-terms/export")
   async exportSearchTerms(@Query() query: any, @Req() req: Request) {
     const user = getAuthenticatedUser(req);
     await this.auth.consumeQuota(user, "export", req, query);
-    const result = await this.aba.exportSearchTerms(query);
+    const result = await this.aba.exportSearchTerms(query, this.auth.getVisibleDataDepth(user.plan));
     const exportId = await this.auth.logExport(user, req, result.rows.length, query);
     return { ...result, exportId };
   }

@@ -1,11 +1,11 @@
 "use client";
 
-import type { AbaSearchTermRow, AbaWeek, ChangeType } from "@aba/shared";
+import type { AbaSearchTermRow, AbaWeek, ChangeType, MemberUser } from "@aba/shared";
 import { Copy, Download, ExternalLink, RotateCcw, Search, SlidersHorizontal } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Card, Field, inputClass, PageHeader } from "../components/ui";
-import { fetchAbaSearchTerms, fetchAbaSearchTermsExport, fetchAbaWeeks, logKeywordCopy } from "../lib/api";
+import { fetchAbaSearchTerms, fetchAbaSearchTermsExport, fetchAbaWeeks, fetchCurrentMember, logKeywordCopy } from "../lib/api";
 
 type FilterState = {
   keyword: string;
@@ -85,6 +85,7 @@ function AbaSearchTermsContent() {
   const [copyMessage, setCopyMessage] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
+  const [member, setMember] = useState<MemberUser | null>(null);
 
   useEffect(() => {
     fetchAbaWeeks().then((items) => {
@@ -92,6 +93,10 @@ function AbaSearchTermsContent() {
       setWeekStart((value) => value || items[0]?.periodStart || "");
       setCompareWeekStart((value) => value || (initialCompareSpecified.current ? "" : items[1]?.periodStart || ""));
     });
+  }, []);
+
+  useEffect(() => {
+    fetchCurrentMember().then(setMember);
   }, []);
 
   useEffect(() => {
@@ -108,6 +113,7 @@ function AbaSearchTermsContent() {
   const compareWeek = weeks.find((week) => week.periodStart === compareWeekStart);
   const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
   const summary = useMemo(() => summarizeRows(data.rows), [data.rows]);
+  const accessNotice = useMemo(() => planAccessNotice(member), [member]);
   const searchUrl = useMemo(
     () => buildSearchUrl({ weekStart, compareWeekStart, filters: appliedFilters, page, pageSize }),
     [weekStart, compareWeekStart, appliedFilters, page, pageSize]
@@ -423,6 +429,12 @@ function AbaSearchTermsContent() {
         <Metric label="本页上升/下降" value={`${summary.upCount}/${summary.downCount}`} />
       </div>
 
+
+      {accessNotice ? (
+        <div className="mb-4 rounded-lg border border-sky-100 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-700 dark:border-sky-900 dark:bg-sky-950/50 dark:text-sky-200">
+          {accessNotice}
+        </div>
+      ) : null}
       <Card>
         <ResultToolbar
           page={page}
@@ -784,6 +796,13 @@ function readableChangeType(value: ChangeType) {
 function amazonSearchHref(keyword: string) {
   const query = encodeURIComponent(keyword.trim()).replaceAll("%20", "+");
   return `https://www.amazon.com/s?k=${query}`;
+}
+
+function planAccessNotice(member: MemberUser | null) {
+  if (!member) return "";
+  if (member.plan === "pro") return "PRO 可查看全部数据";
+  if (member.plan === "basic") return "BASIC 可查看前 50,000 条结果";
+  return "TRIAL 可查看前 1,000 条结果";
 }
 
 async function copyText(text: string) {

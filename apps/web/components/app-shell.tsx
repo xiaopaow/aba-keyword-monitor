@@ -1,13 +1,13 @@
 "use client";
 
 import clsx from "clsx";
-import { BarChart3, LogIn, Moon, Sun, UserPlus, UserRound, X } from "lucide-react";
+import { ArrowUp, BarChart3, Headphones, LogIn, LogOut, Moon, Sun, UserPlus, UserRound, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { FormEvent, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import type { MemberUser } from "@aba/shared";
-import { fetchCurrentMember, loginMember, registerMember } from "../lib/api";
+import { fetchCurrentMember, loginMember, logoutMember, registerMember } from "../lib/api";
 import { WhaleLogo } from "./brand";
 
 const navItems = [
@@ -41,9 +41,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState("demo@deepwhale.local");
   const [password, setPassword] = useState("demo123456");
   const [submitting, setSubmitting] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
   const [darkMode, setDarkMode] = useState(false);
   const [searchHref, setSearchHref] = useState("/");
+  const [supportOpen, setSupportOpen] = useState(false);
 
   useEffect(() => {
     fetchCurrentMember()
@@ -112,6 +114,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
+  async function handleLogout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logoutMember();
+      setMember(null);
+    } finally {
+      setLoggingOut(false);
+    }
+  }
+
+  function scrollToTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
@@ -145,12 +162,23 @@ export function AppShell({ children }: { children: ReactNode }) {
               数据源在线
             </div>
             {!loading && member ? (
-              <Link
-                href="/member"
-                className="hidden rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 sm:inline-flex"
-              >
-                {member.plan.toUpperCase()} · {member.email}
-              </Link>
+              <div className="hidden items-center gap-2 sm:flex">
+                <Link
+                  href="/member"
+                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  {member.plan.toUpperCase()} · {member.email}
+                </Link>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 shadow-sm transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-wait disabled:opacity-60 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-orange-900 dark:hover:text-orange-300"
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  {loggingOut ? "退出中" : "退出"}
+                </button>
+              </div>
             ) : null}
             {!loading && !member ? (
               <button
@@ -176,6 +204,44 @@ export function AppShell({ children }: { children: ReactNode }) {
       </header>
 
       <main className="mx-auto max-w-[1750px] px-6 py-8">{children}</main>
+
+      <div className="fixed bottom-24 right-5 z-40 flex flex-col items-end gap-3">
+        <div
+          className="group relative"
+          onMouseEnter={() => setSupportOpen(true)}
+          onMouseLeave={() => setSupportOpen(false)}
+        >
+          <button
+            type="button"
+            aria-label="联系客服"
+            title="联系客服"
+            className="grid h-12 w-12 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-sky-300"
+            onClick={() => setSupportOpen((value) => !value)}
+            onFocus={() => setSupportOpen(true)}
+          >
+            <Headphones className="h-5 w-5" />
+          </button>
+          <div
+            className={clsx(
+              "absolute bottom-0 right-14 w-52 rounded-xl border border-slate-200 bg-white p-3 text-center shadow-xl transition dark:border-slate-800 dark:bg-slate-900",
+              supportOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+            )}
+          >
+            <img className="h-44 w-full rounded-lg bg-white object-contain" src="/customer-wechat.jpg" alt="客服微信二维码" />
+            <div className="mt-2 text-sm font-bold text-slate-800 dark:text-slate-100">扫码添加客服</div>
+            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">微信咨询会员与数据问题</div>
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="回到顶部"
+          title="回到顶部"
+          className="grid h-12 w-12 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-orange-200 hover:text-orange-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-orange-300"
+          onClick={scrollToTop}
+        >
+          <ArrowUp className="h-5 w-5" />
+        </button>
+      </div>
 
       {authOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm">

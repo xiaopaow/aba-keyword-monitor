@@ -42,7 +42,7 @@ const PLAN_LIMITS: Record<
 > = {
   trial: { queryPerDay: 100, exportPerDay: 0, copyPerDay: 20, dataDepth: 1000, exportLimit: 0 },
   basic: { queryPerDay: 1000, exportPerDay: 3, copyPerDay: 200, dataDepth: 50000, exportLimit: 10000 },
-  pro: { queryPerDay: 5000, exportPerDay: 20, copyPerDay: 1000, dataDepth: 500000, exportLimit: 10000 }
+  pro: { queryPerDay: 5000, exportPerDay: 20, copyPerDay: 1000, dataDepth: Number.POSITIVE_INFINITY, exportLimit: 10000 }
 };
 
 @Injectable()
@@ -65,7 +65,7 @@ export class AuthService implements OnModuleInit {
     }
 
     this.assertMemberCanAccess(user);
-    await this.assertOrBindDevice(user, deviceFingerprint, req, normalizedEmail === DEMO_PRO_EMAIL);
+    await this.assertOrBindDevice(user, deviceFingerprint, req);
 
     const plainToken = randomBytes(32).toString("base64url");
     const tokenHash = hashToken(plainToken);
@@ -163,7 +163,7 @@ export class AuthService implements OnModuleInit {
     const pageSize = Math.max(Number(query.pageSize ?? 50), 1);
     const requestedDepth = page * pageSize;
 
-    if (action === "query" && requestedDepth > limits.dataDepth) {
+    if (action === "query" && Number.isFinite(limits.dataDepth) && requestedDepth > limits.dataDepth) {
       await this.logAccess(user.id, action, req, query, "blocked", "data_depth_limit");
       throw new ForbiddenException(`Your plan can view up to ${limits.dataDepth.toLocaleString("en-US")} rows.`);
     }
@@ -199,6 +199,11 @@ export class AuthService implements OnModuleInit {
     });
 
     await this.logAccess(user.id, action, req, query);
+  }
+
+  getVisibleDataDepth(plan: MembershipPlan) {
+    const depth = PLAN_LIMITS[plan]?.dataDepth ?? PLAN_LIMITS.trial.dataDepth;
+    return Number.isFinite(depth) ? depth : null;
   }
 
   async logExport(user: AuthenticatedUser | UserRow, req: Request, rowCount: number, query: Record<string, unknown>) {
@@ -348,7 +353,24 @@ export class AuthService implements OnModuleInit {
   private async seedDemoProUser() {
     const email = DEMO_PRO_EMAIL;
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const resetDevice = process.env.RESET_DEMO_DEVICE_ON_START === "true";
     await this.mysql.connection(async (connection) => {
+      if (resetDevice) {
+        await connection.execute(
+          `INSERT INTO aba_members (email, password_hash, plan, status, expires_at, device_fingerprint, device_bound_at)
+           VALUES (?, ?, 'pro', 'active', ?, NULL, NULL)
+           ON DUPLICATE KEY UPDATE
+             password_hash = VALUES(password_hash),
+             plan = 'pro',
+             status = 'active',
+             expires_at = VALUES(expires_at),
+             device_fingerprint = NULL,
+             device_bound_at = NULL`,
+          [email, hashPassword("demo123456"), expiresAt]
+        );
+        return;
+      }
+
       await connection.execute(
         `INSERT INTO aba_members (email, password_hash, plan, status, expires_at, device_fingerprint, device_bound_at)
          VALUES (?, ?, 'pro', 'active', ?, NULL, NULL)
@@ -356,13 +378,11 @@ export class AuthService implements OnModuleInit {
            password_hash = VALUES(password_hash),
            plan = 'pro',
            status = 'active',
-           expires_at = VALUES(expires_at),
-           device_fingerprint = NULL,
-           device_bound_at = NULL`,
+           expires_at = VALUES(expires_at)`,
         [email, hashPassword("demo123456"), expiresAt]
       );
     });
-    this.logger.log(`Seeded or refreshed local Pro member ${email}.`);
+    this.logger.log(`Seeded or refreshed local Pro member ${email}${resetDevice ? " and reset its device binding" : ""}.`);
   }
 
   private async findUserByEmail(email: string) {

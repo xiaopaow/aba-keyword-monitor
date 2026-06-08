@@ -125,15 +125,15 @@ export class AbaService {
     return dedupeWeeks(weeks).sort((a, b) => b.periodStart.localeCompare(a.periodStart));
   }
 
-  async searchTerms(query: AbaSearchQuery): Promise<AbaSearchTermsResponse> {
-    return this.searchTermsWithLimit(query, 200);
+  async searchTerms(query: AbaSearchQuery, visibleLimit: number | null = null): Promise<AbaSearchTermsResponse> {
+    return this.searchTermsWithLimit(query, 200, visibleLimit);
   }
 
-  async exportSearchTerms(query: AbaSearchQuery): Promise<AbaSearchTermsResponse> {
-    return this.searchTermsWithLimit({ ...query, page: "1" }, 10000);
+  async exportSearchTerms(query: AbaSearchQuery, visibleLimit: number | null = null): Promise<AbaSearchTermsResponse> {
+    return this.searchTermsWithLimit({ ...query, page: "1" }, 10000, visibleLimit);
   }
 
-  private async searchTermsWithLimit(query: AbaSearchQuery, maxPageSize: number): Promise<AbaSearchTermsResponse> {
+  private async searchTermsWithLimit(query: AbaSearchQuery, maxPageSize: number, visibleLimit: number | null = null): Promise<AbaSearchTermsResponse> {
     const page = Math.max(Number(query.page ?? 1), 1);
     const pageSize = Math.min(Math.max(Number(query.pageSize ?? 50), 1), maxPageSize);
     const weeks = await this.weeks();
@@ -162,7 +162,8 @@ export class AbaService {
         currentTable,
         compareTable: compareExists ? compareTable : null,
         currentWeek,
-        compareWeek: compareExists ? compareWeek : null
+        compareWeek: compareExists ? compareWeek : null,
+        visibleLimit
       });
     }
 
@@ -215,7 +216,7 @@ export class AbaService {
     const keywordExplanationSql = hasKeywordExplanations ? "ke.cn_explanation" : "NULL";
 
     const countRows = await this.mysql.query<CountRow>(`${baseSql} SELECT COUNT(*) AS total FROM base ${whereSql}`, params);
-    const total = Number(countRows[0]?.total ?? 0);
+    const total = clampVisibleTotal(Number(countRows[0]?.total ?? 0), visibleLimit);
 
     const dataRows = await this.mysql.query<SearchRow>(
       `${baseSql}
@@ -319,7 +320,8 @@ export class AbaService {
     currentTable,
     compareTable,
     currentWeek,
-    compareWeek
+    compareWeek,
+    visibleLimit
   }: {
     query: AbaSearchQuery;
     page: number;
@@ -328,6 +330,7 @@ export class AbaService {
     compareTable: string | null;
     currentWeek: AbaWeek;
     compareWeek: AbaWeek | null;
+    visibleLimit: number | null;
   }): Promise<AbaSearchTermsResponse> {
     const current = quoteIdentifier(currentTable);
     const compare = compareTable ? quoteIdentifier(compareTable) : null;
@@ -403,9 +406,10 @@ export class AbaService {
       !canUseRowNo;
 
     const useApproximateTotal = Boolean(requestedChangeType);
-    const total = where.length && !useApproximateTotal
+    const rawTotal = where.length && !useApproximateTotal
       ? Number((await this.mysql.query<CountRow>(`SELECT COUNT(*) AS total FROM ${fromSql} ${whereSql}`, params))[0]?.total ?? 0)
       : Number(currentWeek.totalTerms ?? 0);
+    const total = clampVisibleTotal(rawTotal, visibleLimit);
     const compareRankSelect = shouldJoinCompare ? "p.search_frequency_rank" : "NULL";
 
     const selectSql = `SELECT
@@ -657,6 +661,11 @@ function nullableNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function clampVisibleTotal(total: number, visibleLimit: number | null) {
+  if (visibleLimit === null) return total;
+  return Math.min(total, visibleLimit);
 }
 
 function changeTypeFor(currentRank: number | null, compareRank: number | null): ChangeType {
