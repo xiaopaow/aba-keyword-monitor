@@ -57,7 +57,14 @@ export class AuthService implements OnModuleInit {
     await this.seedDemoProUser();
   }
 
-  async login(email: string, password: string, deviceFingerprint: string, req: Request, res: Response) {
+  async login(
+    email: string,
+    password: string,
+    deviceFingerprint: string,
+    req: Request,
+    res: Response,
+    legacyDeviceFingerprints: string[] = []
+  ) {
     const normalizedEmail = email.trim().toLowerCase();
     const user = await this.findUserByEmail(normalizedEmail);
     if (!user || !verifyPassword(password, user.password_hash)) {
@@ -65,8 +72,6 @@ export class AuthService implements OnModuleInit {
     }
 
     this.assertMemberCanAccess(user);
-    await this.assertOrBindDevice(user, deviceFingerprint, req);
-
     const plainToken = randomBytes(32).toString("base64url");
     const tokenHash = hashToken(plainToken);
     const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
@@ -91,7 +96,14 @@ export class AuthService implements OnModuleInit {
     return this.publicUser({ ...user, device_fingerprint: deviceFingerprint });
   }
 
-  async register(email: string, password: string, deviceFingerprint: string, req: Request, res: Response) {
+  async register(
+    email: string,
+    password: string,
+    deviceFingerprint: string,
+    req: Request,
+    res: Response,
+    legacyDeviceFingerprints: string[] = []
+  ) {
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail.includes("@")) throw new ForbiddenException("Valid email required.");
     if (!password || password.length < 6) throw new ForbiddenException("Password must be at least 6 characters.");
@@ -109,7 +121,7 @@ export class AuthService implements OnModuleInit {
     });
 
     await this.logAccess(null, "register", req, { email: normalizedEmail });
-    return this.login(normalizedEmail, password, deviceFingerprint, req, res);
+    return this.login(normalizedEmail, password, deviceFingerprint, req, res, legacyDeviceFingerprints);
   }
 
   async logout(req: Request, res: Response) {
@@ -130,7 +142,6 @@ export class AuthService implements OnModuleInit {
 
   async validateRequest(req: Request, required = true): Promise<UserRow | null> {
     const token = readCookie(req, SESSION_COOKIE);
-    const deviceFingerprint = getDeviceFingerprint(req);
     if (!token) {
       if (required) throw new UnauthorizedException("Login required.");
       return null;
@@ -152,7 +163,6 @@ export class AuthService implements OnModuleInit {
     }
 
     this.assertMemberCanAccess(row);
-    await this.assertOrBindDevice(row, deviceFingerprint, req);
     return row;
   }
 
@@ -394,36 +404,6 @@ export class AuthService implements OnModuleInit {
     if (user.status !== "active") throw new ForbiddenException("Member account is not active.");
     if (user.expires_at && new Date(user.expires_at).getTime() < Date.now()) {
       throw new ForbiddenException("Membership expired.");
-    }
-  }
-
-  private async assertOrBindDevice(user: UserRow, deviceFingerprint: string, req: Request, allowRebind = false) {
-    if (!deviceFingerprint || deviceFingerprint.length < 16) {
-      throw new ForbiddenException("Valid device fingerprint required.");
-    }
-    if (!user.device_fingerprint) {
-      await this.mysql.connection(async (connection) => {
-        await connection.execute(
-          "UPDATE aba_members SET device_fingerprint = ?, device_bound_at = NOW() WHERE id = ? AND device_fingerprint IS NULL",
-          [deviceFingerprint, user.id]
-        );
-      });
-      await this.logAccess(user.id, "bind_device", req, { deviceFingerprint });
-      return;
-    }
-    if (user.device_fingerprint !== deviceFingerprint) {
-      if (allowRebind) {
-        await this.mysql.connection(async (connection) => {
-          await connection.execute("UPDATE aba_members SET device_fingerprint = ?, device_bound_at = NOW() WHERE id = ?", [
-            deviceFingerprint,
-            user.id
-          ]);
-        });
-        await this.logAccess(user.id, "rebind_device", req, { deviceFingerprint });
-        return;
-      }
-      await this.logAccess(user.id, "device_mismatch", req, { deviceFingerprint }, "blocked", "device_mismatch");
-      throw new ForbiddenException("This account is bound to another device.");
     }
   }
 

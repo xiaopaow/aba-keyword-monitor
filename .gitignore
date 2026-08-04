@@ -7,6 +7,12 @@ coverage
 !.env.example
 uploads
 tmp
+logs
+output
+.playwright-cli
+deploy/runtime
+*.sql
+*.sql.gz
 *.log
 *.tsbuildinfo
 .DS_Store

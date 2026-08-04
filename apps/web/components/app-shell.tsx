@@ -15,6 +15,9 @@ const navItems = [
   { href: "/member", label: "会员中心", icon: UserRound }
 ];
 
+const AUTH_CHANGED_EVENT = "deepwhale:auth-changed";
+const OPEN_AUTH_EVENT = "deepwhale:open-auth";
+
 function isActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/";
   return pathname.startsWith(href);
@@ -26,7 +29,6 @@ function normalizeAuthError(error: string, mode: "login" | "register") {
   if (/valid email|email required|邮箱/i.test(error)) return "请输入有效邮箱。";
   if (/already registered|已注册/i.test(error)) return "这个邮箱已经注册，请直接登录。";
   if (/invalid email or password|password/i.test(error)) return "账号或密码错误。";
-  if (/bound|device|fingerprint|设备/i.test(error)) return "该账号已绑定其他设备，请联系管理员重置设备。";
   if (/expired/i.test(error)) return "会员已过期，请续费后继续使用。";
   if (/network/i.test(error)) return "无法连接后端服务，请确认 API 已启动。";
   return mode === "login" ? "登录失败，请检查账号密码。" : "注册失败，请稍后重试。";
@@ -46,6 +48,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [darkMode, setDarkMode] = useState(false);
   const [searchHref, setSearchHref] = useState("/");
   const [supportOpen, setSupportOpen] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   useEffect(() => {
     fetchCurrentMember()
@@ -65,6 +68,26 @@ export function AppShell({ children }: { children: ReactNode }) {
     const savedSearch = window.localStorage.getItem("deepwhale-last-search-url");
     if (savedSearch?.startsWith("/")) setSearchHref(savedSearch);
   }, [pathname]);
+
+  useEffect(() => {
+    function handleOpenAuth(event: Event) {
+      const detail = (event as CustomEvent<{ mode?: "login" | "register" }>).detail;
+      openAuth(detail?.mode === "register" ? "register" : "login");
+    }
+
+    window.addEventListener(OPEN_AUTH_EVENT, handleOpenAuth);
+    return () => window.removeEventListener(OPEN_AUTH_EVENT, handleOpenAuth);
+  }, []);
+
+  useEffect(() => {
+    function handleScroll() {
+      setShowScrollTop(window.scrollY > 600);
+    }
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   function toggleTheme() {
     setDarkMode((current) => {
@@ -109,6 +132,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       }
       setMember(result.data);
       setAuthOpen(false);
+      window.dispatchEvent(new CustomEvent(AUTH_CHANGED_EVENT));
     } finally {
       setSubmitting(false);
     }
@@ -120,6 +144,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     try {
       await logoutMember();
       setMember(null);
+      window.dispatchEvent(new CustomEvent(AUTH_CHANGED_EVENT));
     } finally {
       setLoggingOut(false);
     }
@@ -132,7 +157,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
-        <div className="mx-auto flex h-20 max-w-[1750px] items-center justify-between px-6">
+        <div className="mx-auto flex h-16 max-w-[1750px] items-center justify-between px-4 md:h-20 md:px-6">
           <WhaleLogo />
 
           <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:flex">
@@ -180,6 +205,18 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </button>
               </div>
             ) : null}
+            {!loading && member ? (
+              <button
+                type="button"
+                className="grid h-10 w-10 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-orange-200 hover:text-orange-600 disabled:cursor-wait disabled:opacity-60 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 sm:hidden"
+                onClick={handleLogout}
+                disabled={loggingOut}
+                aria-label={loggingOut ? "退出中" : "退出登录"}
+                title={loggingOut ? "退出中" : "退出登录"}
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            ) : null}
             {!loading && !member ? (
               <button
                 type="button"
@@ -194,18 +231,39 @@ export function AppShell({ children }: { children: ReactNode }) {
               type="button"
               aria-label={darkMode ? "切换浅色模式" : "切换深色模式"}
               title={darkMode ? "切换浅色模式" : "切换深色模式"}
-              className="grid h-11 w-11 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-white"
+              className="grid h-10 w-10 place-items-center rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:text-white md:h-11 md:w-11 md:rounded-xl"
               onClick={toggleTheme}
             >
               {darkMode ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </button>
           </div>
         </div>
+        <nav className="grid grid-cols-2 border-t border-slate-100 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950 md:hidden">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const activeItem = isActive(pathname, item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href === "/" ? searchHref : item.href}
+                className={clsx(
+                  "inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition",
+                  activeItem
+                    ? "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-200"
+                    : "text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-white"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {item.href === "/member" && member ? `${member.plan.toUpperCase()} 会员` : item.label}
+              </Link>
+            );
+          })}
+        </nav>
       </header>
 
-      <main className="mx-auto max-w-[1750px] px-6 py-8">{children}</main>
+      <main className="mx-auto max-w-[1750px] px-4 py-6 md:px-6 md:py-8">{children}</main>
 
-      <div className="fixed bottom-24 right-5 z-40 flex flex-col items-end gap-3">
+      <div className="fixed bottom-4 right-3 z-40 flex flex-col items-end gap-2 md:bottom-24 md:right-5 md:gap-3">
         <div
           className="group relative"
           onMouseEnter={() => setSupportOpen(true)}
@@ -215,7 +273,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             type="button"
             aria-label="联系客服"
             title="联系客服"
-            className="grid h-12 w-12 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-sky-300"
+            className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-sky-200 hover:text-sky-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-sky-300 md:h-12 md:w-12"
             onClick={() => setSupportOpen((value) => !value)}
             onFocus={() => setSupportOpen(true)}
           >
@@ -232,15 +290,17 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">微信咨询会员与数据问题</div>
           </div>
         </div>
-        <button
-          type="button"
-          aria-label="回到顶部"
-          title="回到顶部"
-          className="grid h-12 w-12 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-orange-200 hover:text-orange-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-orange-300"
-          onClick={scrollToTop}
-        >
-          <ArrowUp className="h-5 w-5" />
-        </button>
+        {showScrollTop ? (
+          <button
+            type="button"
+            aria-label="回到顶部"
+            title="回到顶部"
+            className="grid h-10 w-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-lg transition hover:border-orange-200 hover:text-orange-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:text-orange-300 md:h-12 md:w-12"
+            onClick={scrollToTop}
+          >
+            <ArrowUp className="h-5 w-5" />
+          </button>
+        ) : null}
       </div>
 
       {authOpen ? (
@@ -260,7 +320,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <h2 className="mt-5 text-2xl font-black text-slate-950 dark:text-white">
                 {mode === "login" ? "登录深海鲸行" : "注册深海鲸行"}
               </h2>
-              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">单账号默认绑定 1 台设备，保护你的会员权益。</p>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">登录后即可使用与你套餐对应的数据权限。</p>
             </div>
 
             <div className="mt-7 grid grid-cols-2 rounded-xl bg-slate-100 p-1 text-sm font-bold dark:bg-slate-800">

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import type { RowDataPacket } from "mysql2/promise";
 import type { AbaSearchTermRow, AbaSearchTermsResponse, AbaTopProduct, AbaWeek, ChangeType } from "@aba/shared";
 import { MysqlService } from "../db/mysql.service.js";
@@ -81,11 +81,25 @@ interface KeywordExplanationRow extends RowDataPacket {
 interface AsinAssetRow extends RowDataPacket {
   asin: string;
   image_url: string | null;
+  price: number | null;
+  rating: number | null;
+  review_count: number | null;
+  detail_url: string | null;
+}
+
+interface AsinAsset {
+  imageUrl: string | null;
+  price: number | null;
+  rating: number | null;
+  reviewCount: number | null;
+  detailUrl: string | null;
 }
 
 @Injectable()
 export class AbaService {
   private readonly logger = new Logger(AbaService.name);
+  private readonly exactTableCountCache = new Map<string, { total: number; expiresAt: number }>();
+  private readonly filteredTotalCache = new Map<string, { total: number; expiresAt: number }>();
 
   constructor(private readonly mysql: MysqlService) {}
 
@@ -136,15 +150,22 @@ export class AbaService {
   private async searchTermsWithLimit(query: AbaSearchQuery, maxPageSize: number, visibleLimit: number | null = null): Promise<AbaSearchTermsResponse> {
     const page = Math.max(Number(query.page ?? 1), 1);
     const pageSize = Math.min(Math.max(Number(query.pageSize ?? 50), 1), maxPageSize);
+    const excludedKeywords = parseExcludedKeywords(query.excludeKeyword);
     const weeks = await this.weeks();
     const currentWeek = weeks.find((week) => week.periodStart === query.weekStart) ?? weeks[0] ?? null;
-    const currentIndex = currentWeek ? weeks.findIndex((week) => week.periodStart === currentWeek.periodStart) : -1;
-    const compareWeek =
-      weeks.find((week) => week.periodStart === query.compareWeekStart) ?? (currentIndex >= 0 ? weeks[currentIndex + 1] : null) ?? null;
-
     if (!currentWeek) {
       return { rows: [], page, pageSize, total: 0, weekStart: null, weekEnd: null, compareWeekStart: null };
     }
+
+    const currentIndex = weeks.findIndex((week) => week.periodStart === currentWeek.periodStart);
+    const explicitCompare = typeof query.compareWeekStart === "string";
+    const requestedCompareWeek = query.compareWeekStart ? weeks.find((week) => week.periodStart === query.compareWeekStart) ?? null : null;
+    if (requestedCompareWeek && requestedCompareWeek.periodStart >= currentWeek.periodStart) {
+      throw new BadRequestException("对比周必须早于报告周。");
+    }
+    const compareWeek = explicitCompare
+      ? requestedCompareWeek
+      : (currentIndex >= 0 ? weeks[currentIndex + 1] : null) ?? null;
 
     const currentTable = tableNameFromWeek(currentWeek.periodStart);
     const compareTable = compareWeek ? tableNameFromWeek(compareWeek.periodStart) : null;
@@ -163,33 +184,42 @@ export class AbaService {
         compareTable: compareExists ? compareTable : null,
         currentWeek,
         compareWeek: compareExists ? compareWeek : null,
+        excludedKeywords,
         visibleLimit
       });
     }
 
-    const params: unknown[] = [];
+    const preWhere: string[] = [];
+    const preParams: unknown[] = [];
     const where: string[] = [];
+    const params: unknown[] = [];
+    const addPre = (value: unknown) => {
+      preParams.push(value);
+      return "?";
+    };
     const add = (value: unknown) => {
       params.push(value);
       return "?";
     };
+    const hasFastNarrowingFilter = Boolean(
+      query.keyword?.trim() ||
+        excludedKeywords.length ||
+        query.rankMin ||
+        query.rankMax ||
+        query.asin?.trim()
+    );
+    if (!hasFastNarrowingFilter) {
+      throw new BadRequestException("旧周报数据量较大，请先输入关键词、ASIN 或排名范围后再查询。");
+    }
 
-    if (query.keyword?.trim()) where.push(`LOWER(base.search_term) LIKE LOWER(${add(`%${query.keyword.trim()}%`)})`);
-    if (query.excludeKeyword?.trim()) where.push(`LOWER(base.search_term) NOT LIKE LOWER(${add(`%${query.excludeKeyword.trim()}%`)})`);
-    if (query.rankMin) where.push(`base.current_rank >= ${add(Number(query.rankMin))}`);
-    if (query.rankMax) where.push(`base.current_rank <= ${add(Number(query.rankMax))}`);
+    if (query.keyword?.trim()) preWhere.push(`search_term LIKE ${addPre(`${query.keyword.trim()}%`)}`);
+    for (const excludedKeyword of excludedKeywords) {
+      preWhere.push(`LOWER(search_term) NOT LIKE ${addPre(`%${excludedKeyword}%`)}`);
+    }
+    if (query.rankMin) preWhere.push(`search_frequency_rank >= ${addPre(Number(query.rankMin))}`);
+    if (query.rankMax) preWhere.push(`search_frequency_rank <= ${addPre(Number(query.rankMax))}`);
     if (query.asin?.trim()) {
-      where.push(
-        isWideTable
-          ? `(LOWER(base.product1_asin) = LOWER(${add(query.asin.trim())})
-              OR LOWER(base.product2_asin) = LOWER(${add(query.asin.trim())})
-              OR LOWER(base.product3_asin) = LOWER(${add(query.asin.trim())}))`
-          : `EXISTS (
-              SELECT 1 FROM ${quoteIdentifier(currentTable)} asin_filter
-              WHERE asin_filter.search_term = base.search_term
-                AND LOWER(asin_filter.clicked_asin) = LOWER(${add(query.asin.trim())})
-            )`
-      );
+      preWhere.push(`LOWER(clicked_asin) = LOWER(${addPre(query.asin.trim())})`);
     }
     if (query.clickShareMin) where.push(`base.max_click_share >= ${add(Number(query.clickShareMin) / 100)}`);
     if (query.clickShareMax) where.push(`base.max_click_share <= ${add(Number(query.clickShareMax) / 100)}`);
@@ -205,9 +235,18 @@ export class AbaService {
       conversionShare: "base.max_conversion_share",
       keyword: "base.search_term"
     } satisfies Record<NonNullable<AbaSearchQuery["sort"]>, string>;
-    const sort = sortMap[query.sort ?? "rank"] ?? sortMap.rank;
-    const order = query.order === "desc" ? "DESC" : "ASC";
-    const baseSql = this.baseSql(currentTable, compareExists ? compareTable : null, isWideTable);
+    const requestedChangeType = query.changeType && query.changeType !== "all" ? query.changeType : null;
+    const requestedSort = query.sort ?? "rank";
+    if (requestedChangeType && !compareExists) {
+      return { rows: [], page, pageSize, total: 0, weekStart: currentWeek.periodStart, weekEnd: currentWeek.periodEnd, compareWeekStart: null };
+    }
+    if (requestedSort === "rankChange" && !compareExists) {
+      throw new BadRequestException("排名变化排序需要先选择有效的对比周。");
+    }
+    const sort = sortMap[requestedSort] ?? sortMap.rank;
+    const order = query.order ? (query.order === "desc" ? "DESC" : "ASC") : defaultSortOrder(requestedSort, requestedChangeType);
+    const preWhereSql = preWhere.length ? `WHERE ${preWhere.join(" AND ")}` : "";
+    const baseSql = this.baseSql(currentTable, compareExists ? compareTable : null, isWideTable, preWhereSql);
     const topProductsSql = isWideTable ? this.wideTopProductsSql() : this.narrowTopProductsSql(currentTable);
     const hasKeywordExplanations = await this.plainTableExists("aba_keyword_explanations");
     const metadataJoinSql = hasKeywordExplanations
@@ -215,7 +254,8 @@ export class AbaService {
       : "";
     const keywordExplanationSql = hasKeywordExplanations ? "ke.cn_explanation" : "NULL";
 
-    const countRows = await this.mysql.query<CountRow>(`${baseSql} SELECT COUNT(*) AS total FROM base ${whereSql}`, params);
+    const queryParams = [...preParams, ...params];
+    const countRows = await this.mysql.query<CountRow>(`${baseSql} SELECT COUNT(*) AS total FROM base ${whereSql}`, queryParams);
     const total = clampVisibleTotal(Number(countRows[0]?.total ?? 0), visibleLimit);
 
     const dataRows = await this.mysql.query<SearchRow>(
@@ -234,7 +274,7 @@ export class AbaService {
        ${whereSql}
        ORDER BY ${sort} ${order}, base.search_term ASC
        LIMIT ? OFFSET ?`,
-      [...params, pageSize, (page - 1) * pageSize]
+      [...queryParams, pageSize, (page - 1) * pageSize]
     );
 
     const rows: AbaSearchTermRow[] = dataRows.map((row) => ({
@@ -321,6 +361,7 @@ export class AbaService {
     compareTable,
     currentWeek,
     compareWeek,
+    excludedKeywords,
     visibleLimit
   }: {
     query: AbaSearchQuery;
@@ -330,12 +371,27 @@ export class AbaService {
     compareTable: string | null;
     currentWeek: AbaWeek;
     compareWeek: AbaWeek | null;
+    excludedKeywords: string[];
     visibleLimit: number | null;
   }): Promise<AbaSearchTermsResponse> {
     const current = quoteIdentifier(currentTable);
     const compare = compareTable ? quoteIdentifier(compareTable) : null;
     const requestedChangeType = query.changeType && query.changeType !== "all" ? query.changeType : null;
-    const shouldJoinCompare = Boolean(compare && query.sort === "rankChange");
+    const shouldJoinCompare = Boolean(compare && (query.sort === "rankChange" || requestedChangeType));
+    const hasNarrowingFilter = Boolean(
+      query.keyword?.trim() ||
+        excludedKeywords.length ||
+        query.rankMin ||
+        query.rankMax ||
+        query.asin?.trim() ||
+        query.clickShareMin ||
+        query.clickShareMax ||
+        query.conversionShareMin ||
+        query.conversionShareMax
+    );
+    if (query.sort === "rankChange" && !requestedChangeType && !hasNarrowingFilter) {
+      throw new BadRequestException("请先选择变化类型或输入关键词后再按排名变化排序。");
+    }
     const params: unknown[] = [];
     const where: string[] = [];
     const add = (value: unknown) => {
@@ -348,7 +404,9 @@ export class AbaService {
       "GREATEST(COALESCE(c.product1_conversion_share, 0), COALESCE(c.product2_conversion_share, 0), COALESCE(c.product3_conversion_share, 0))";
 
     if (query.keyword?.trim()) where.push(`LOWER(c.search_term) LIKE LOWER(${add(`%${query.keyword.trim()}%`)})`);
-    if (query.excludeKeyword?.trim()) where.push(`LOWER(c.search_term) NOT LIKE LOWER(${add(`%${query.excludeKeyword.trim()}%`)})`);
+    for (const excludedKeyword of excludedKeywords) {
+      where.push(`LOWER(c.search_term) NOT LIKE ${add(`%${excludedKeyword}%`)}`);
+    }
     if (query.rankMin) where.push(`c.search_frequency_rank >= ${add(Number(query.rankMin))}`);
     if (query.rankMax) where.push(`c.search_frequency_rank <= ${add(Number(query.rankMax))}`);
     if (query.asin?.trim()) {
@@ -364,14 +422,14 @@ export class AbaService {
     if (query.conversionShareMin) where.push(`${maxConversionShare} >= ${add(Number(query.conversionShareMin) / 100)}`);
     if (query.conversionShareMax) where.push(`${maxConversionShare} <= ${add(Number(query.conversionShareMax) / 100)}`);
     if (requestedChangeType) {
-      const compareLookup = compare
-        ? `SELECT 1 FROM ${compare} p WHERE p.search_term = c.search_term`
-        : "";
+      if (!compare) {
+        return { rows: [], page, pageSize, total: 0, weekStart: currentWeek.periodStart, weekEnd: currentWeek.periodEnd, compareWeekStart: null };
+      }
       const changeSql = {
-        new: compare ? `NOT EXISTS (${compareLookup})` : "TRUE",
-        up: compare ? `EXISTS (${compareLookup} AND c.search_frequency_rank < p.search_frequency_rank)` : "FALSE",
-        down: compare ? `EXISTS (${compareLookup} AND c.search_frequency_rank > p.search_frequency_rank)` : "FALSE",
-        flat: compare ? `EXISTS (${compareLookup} AND c.search_frequency_rank = p.search_frequency_rank)` : "FALSE",
+        new: `NOT EXISTS (SELECT 1 FROM ${compare} p WHERE p.search_term = c.search_term)`,
+        up: `EXISTS (SELECT 1 FROM ${compare} p WHERE p.search_term = c.search_term AND c.search_frequency_rank < p.search_frequency_rank)`,
+        down: `EXISTS (SELECT 1 FROM ${compare} p WHERE p.search_term = c.search_term AND c.search_frequency_rank > p.search_frequency_rank)`,
+        flat: `EXISTS (SELECT 1 FROM ${compare} p WHERE p.search_term = c.search_term AND c.search_frequency_rank = p.search_frequency_rank)`,
         lost: "FALSE"
       } satisfies Record<ChangeType, string>;
       where.push(changeSql[requestedChangeType]);
@@ -390,7 +448,7 @@ export class AbaService {
     } satisfies Record<NonNullable<AbaSearchQuery["sort"]>, string>;
     const requestedSort = query.sort ?? "rank";
     const sort = sortMap[requestedSort] ?? sortMap.rank;
-    const order = query.order === "desc" ? "DESC" : "ASC";
+    const order = query.order ? (query.order === "desc" ? "DESC" : "ASC") : defaultSortOrder(requestedSort, requestedChangeType);
     const canUseRowNo =
       requestedSort === "rank" &&
       order === "ASC" &&
@@ -405,10 +463,22 @@ export class AbaService {
       !shouldJoinCompare &&
       !canUseRowNo;
 
-    const useApproximateTotal = Boolean(requestedChangeType);
-    const rawTotal = where.length && !useApproximateTotal
-      ? Number((await this.mysql.query<CountRow>(`SELECT COUNT(*) AS total FROM ${fromSql} ${whereSql}`, params))[0]?.total ?? 0)
-      : Number(currentWeek.totalTerms ?? 0);
+    const useApproximateTotal = requestedChangeType === "lost";
+    const rawTotal = useApproximateTotal
+      ? Number(currentWeek.totalTerms ?? 0)
+      : where.length
+        ? await this.filteredTotalCount({
+            cacheKey: this.filteredTotalCacheKey({
+              currentTable,
+              compareTable,
+              fromSql,
+              whereSql,
+              params
+            }),
+            sql: `SELECT COUNT(*) AS total FROM ${fromSql} ${whereSql}`,
+            params
+          })
+        : await this.exactTableCount(currentTable);
     const total = clampVisibleTotal(rawTotal, visibleLimit);
     const compareRankSelect = shouldJoinCompare ? "p.search_frequency_rank" : "NULL";
 
@@ -503,6 +573,58 @@ export class AbaService {
     return new Map(rows.map((row) => [row.search_term, Number(row.compare_rank)]));
   }
 
+  private async exactTableCount(tableName: string) {
+    if (!isSafeAbaTableName(tableName)) return 0;
+    const cached = this.exactTableCountCache.get(tableName);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) return cached.total;
+
+    const rows = await this.mysql.query<CountRow>(`SELECT COUNT(*) AS total FROM ${quoteIdentifier(tableName)}`);
+    const total = Number(rows[0]?.total ?? 0);
+    this.exactTableCountCache.set(tableName, { total, expiresAt: now + 5 * 60 * 1000 });
+    return total;
+  }
+
+  private filteredTotalCacheKey({
+    currentTable,
+    compareTable,
+    fromSql,
+    whereSql,
+    params
+  }: {
+    currentTable: string;
+    compareTable: string | null;
+    fromSql: string;
+    whereSql: string;
+    params: unknown[];
+  }) {
+    return JSON.stringify({
+      currentTable,
+      compareTable,
+      fromSql,
+      whereSql,
+      params
+    });
+  }
+
+  private async filteredTotalCount({ cacheKey, sql, params }: { cacheKey: string; sql: string; params: unknown[] }) {
+    const now = Date.now();
+    const cached = this.filteredTotalCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.total;
+
+    const rows = await this.mysql.query<CountRow>(sql, params);
+    const total = Number(rows[0]?.total ?? 0);
+    this.filteredTotalCache.set(cacheKey, { total, expiresAt: now + 5 * 60 * 1000 });
+
+    if (this.filteredTotalCache.size > 200) {
+      for (const [key, value] of this.filteredTotalCache) {
+        if (value.expiresAt <= now) this.filteredTotalCache.delete(key);
+      }
+    }
+
+    return total;
+  }
+
   private async fetchKeywordExplanations(terms: string[]) {
     const uniqueTerms = [...new Set(terms.filter(Boolean))];
     if (!uniqueTerms.length || !(await this.plainTableExists("aba_keyword_explanations"))) return new Map<string, string>();
@@ -518,18 +640,29 @@ export class AbaService {
 
   private async fetchAsinAssets(asins: Array<string | null>) {
     const uniqueAsins = [...new Set(asins.map((asin) => asin?.trim().toUpperCase()).filter(Boolean) as string[])];
-    if (!uniqueAsins.length || !(await this.plainTableExists("aba_asin_assets"))) return new Map<string, string>();
+    if (!uniqueAsins.length || !(await this.plainTableExists("aba_asin_assets"))) return new Map<string, AsinAsset>();
     const placeholders = uniqueAsins.map(() => "?").join(", ");
     const rows = await this.mysql.query<AsinAssetRow>(
-      `SELECT asin, image_url
+      `SELECT asin, image_url, price, rating, review_count, detail_url
        FROM \`aba_asin_assets\`
        WHERE asin IN (${placeholders})`,
       uniqueAsins
     );
-    return new Map(rows.filter((row) => row.image_url).map((row) => [row.asin, String(row.image_url)]));
+    return new Map(
+      rows.map((row) => [
+        row.asin,
+        {
+          imageUrl: row.image_url ? String(row.image_url) : null,
+          price: nullableNumber(row.price),
+          rating: nullableNumber(row.rating),
+          reviewCount: nullableNumber(row.review_count),
+          detailUrl: row.detail_url ? String(row.detail_url) : null
+        }
+      ])
+    );
   }
 
-  private baseSql(currentTable: string, compareTable: string | null, isWideTable: boolean) {
+  private baseSql(currentTable: string, compareTable: string | null, isWideTable: boolean, currentWhereSql = "") {
     const current = quoteIdentifier(currentTable);
     const compareJoin = compareTable
       ? `LEFT JOIN (
@@ -561,6 +694,7 @@ export class AbaService {
           MAX(product3_click_share) AS product3_click_share,
           MAX(product3_conversion_share) AS product3_conversion_share` : ""}
         FROM ${current}
+        ${currentWhereSql}
         GROUP BY search_term
       ),
       base AS (
@@ -668,6 +802,22 @@ function clampVisibleTotal(total: number, visibleLimit: number | null) {
   return Math.min(total, visibleLimit);
 }
 
+function parseExcludedKeywords(value: string | undefined) {
+  if (!value?.trim()) return [];
+
+  const keywords = [...new Set(value.split("&").map((item) => item.trim().toLowerCase()).filter(Boolean))];
+  if (keywords.length > 20) {
+    throw new BadRequestException("排除关键词最多支持 20 个，请减少后重试。");
+  }
+  return keywords;
+}
+
+function defaultSortOrder(sort: NonNullable<AbaSearchQuery["sort"]>, changeType: ChangeType | null) {
+  if (sort === "clickShare" || sort === "conversionShare") return "DESC";
+  if (sort === "rankChange") return changeType === "down" ? "ASC" : "DESC";
+  return "ASC";
+}
+
 function changeTypeFor(currentRank: number | null, compareRank: number | null): ChangeType {
   if (compareRank === null) return "new";
   if (currentRank === null) return "lost";
@@ -676,7 +826,7 @@ function changeTypeFor(currentRank: number | null, compareRank: number | null): 
   return "flat";
 }
 
-function wideProducts(row: WidePageRow, asinAssets = new Map<string, string>()): AbaTopProduct[] {
+function wideProducts(row: WidePageRow, asinAssets = new Map<string, AsinAsset>()): AbaTopProduct[] {
   return [
     {
       asin: row.product1_asin,
@@ -684,7 +834,7 @@ function wideProducts(row: WidePageRow, asinAssets = new Map<string, string>()):
       clickShareRank: 1,
       clickShare: nullableNumber(row.product1_click_share),
       conversionShare: nullableNumber(row.product1_conversion_share),
-      imageUrl: imageForAsin(asinAssets, row.product1_asin)
+      ...assetForAsin(asinAssets, row.product1_asin)
     },
     {
       asin: row.product2_asin,
@@ -692,7 +842,7 @@ function wideProducts(row: WidePageRow, asinAssets = new Map<string, string>()):
       clickShareRank: 2,
       clickShare: nullableNumber(row.product2_click_share),
       conversionShare: nullableNumber(row.product2_conversion_share),
-      imageUrl: imageForAsin(asinAssets, row.product2_asin)
+      ...assetForAsin(asinAssets, row.product2_asin)
     },
     {
       asin: row.product3_asin,
@@ -700,14 +850,21 @@ function wideProducts(row: WidePageRow, asinAssets = new Map<string, string>()):
       clickShareRank: 3,
       clickShare: nullableNumber(row.product3_click_share),
       conversionShare: nullableNumber(row.product3_conversion_share),
-      imageUrl: imageForAsin(asinAssets, row.product3_asin)
+      ...assetForAsin(asinAssets, row.product3_asin)
     }
   ].filter((product) => product.asin || product.itemName);
 }
 
-function imageForAsin(asinAssets: Map<string, string>, asin: string | null) {
+function assetForAsin(asinAssets: Map<string, AsinAsset>, asin: string | null) {
   const normalized = asin?.trim().toUpperCase();
-  return normalized ? asinAssets.get(normalized) ?? null : null;
+  const asset = normalized ? asinAssets.get(normalized) : null;
+  return {
+    imageUrl: asset?.imageUrl ?? null,
+    price: asset?.price ?? null,
+    rating: asset?.rating ?? null,
+    reviewCount: asset?.reviewCount ?? null,
+    detailUrl: asset?.detailUrl ?? (normalized ? `https://www.amazon.com/dp/${encodeURIComponent(normalized)}?psc=1` : null)
+  };
 }
 
 function parseTopProducts(raw: string | AbaTopProduct[] | null): AbaTopProduct[] {

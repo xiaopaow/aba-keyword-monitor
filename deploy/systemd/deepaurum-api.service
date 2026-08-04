@@ -1,0 +1,20 @@
+[Unit]
+Description=DeepAurum ABA API
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/deepaurum/app
+EnvironmentFile=/srv/deepaurum/config/api.env
+ExecStart=/usr/bin/node apps/api/dist/main.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

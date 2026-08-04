@@ -9,22 +9,24 @@ export class AuthController {
 
   @Post("login")
   login(
-    @Body() body: { email?: string; password?: string; deviceFingerprint?: string },
+    @Body()
+    body: { email?: string; password?: string; deviceFingerprint?: string; legacyDeviceFingerprint?: string; legacyDeviceFingerprints?: string[] },
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response
   ) {
     const deviceFingerprint = body.deviceFingerprint || getDeviceFingerprint(req);
-    return this.auth.login(body.email ?? "", body.password ?? "", deviceFingerprint, req, res);
+    return this.auth.login(body.email ?? "", body.password ?? "", deviceFingerprint, req, res, readLegacyDeviceFingerprints(body));
   }
 
   @Post("register")
   register(
-    @Body() body: { email?: string; password?: string; deviceFingerprint?: string },
+    @Body()
+    body: { email?: string; password?: string; deviceFingerprint?: string; legacyDeviceFingerprint?: string; legacyDeviceFingerprints?: string[] },
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response
   ) {
     const deviceFingerprint = body.deviceFingerprint || getDeviceFingerprint(req);
-    return this.auth.register(body.email ?? "", body.password ?? "", deviceFingerprint, req, res);
+    return this.auth.register(body.email ?? "", body.password ?? "", deviceFingerprint, req, res, readLegacyDeviceFingerprints(body));
   }
 
   @Post("logout")
@@ -51,4 +53,12 @@ export class AuthController {
     const user = getAuthenticatedUser(req);
     return this.auth.createOrder(user, body.plan ?? "basic", req);
   }
+}
+
+function readLegacyDeviceFingerprints(body: { legacyDeviceFingerprint?: string; legacyDeviceFingerprints?: string[] }) {
+  const values = [
+    ...(Array.isArray(body.legacyDeviceFingerprints) ? body.legacyDeviceFingerprints : []),
+    body.legacyDeviceFingerprint
+  ];
+  return Array.from(new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0)));
 }

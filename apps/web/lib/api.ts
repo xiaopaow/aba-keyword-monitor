@@ -1,7 +1,6 @@
 "use client";
 
 import type { AbaSearchTermsResponse, AbaWeek, MemberUser } from "@aba/shared";
-import { getDeviceFingerprint } from "./device";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
 
@@ -15,17 +14,32 @@ async function getJson<T>(path: string, fallback: T): Promise<T> {
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       cache: "no-store",
-      credentials: "include",
-      headers: {
-        "x-device-fingerprint": await getDeviceFingerprint()
-      }
+      credentials: "include"
     });
-    if (response.status === 401 || response.status === 403 || response.status === 204) return fallback;
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok || response.status === 204) return fallback;
     return parseJson(response, fallback);
-  } catch (error) {
-    console.error(`API request failed: ${path}`, error);
+  } catch {
     return fallback;
+  }
+}
+
+async function getJsonResult<T>(path: string): Promise<ApiResult<T>> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      cache: "no-store",
+      credentials: "include"
+    });
+    const text = await response.text();
+    const payload = parsePayload(text);
+    if (!response.ok) {
+      if (response.status >= 500) {
+        return { data: null, error: "查询失败，请缩小筛选条件或稍后重试。", status: response.status };
+      }
+      return { data: null, error: readApiError(payload, `HTTP ${response.status}`), status: response.status };
+    }
+    return { data: (payload as T) ?? null, error: "", status: response.status };
+  } catch {
+    return { data: null, error: "无法连接后端服务，请确认 API 已启动。", status: 0 };
   }
 }
 
@@ -36,16 +50,13 @@ async function postJson<T>(path: string, body: unknown, fallback: T): Promise<T>
       cache: "no-store",
       credentials: "include",
       headers: {
-        "Content-Type": "application/json",
-        "x-device-fingerprint": await getDeviceFingerprint()
+        "Content-Type": "application/json"
       },
       body: JSON.stringify(body ?? {})
     });
-    if (response.status === 401 || response.status === 403 || response.status === 204) return fallback;
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok || response.status === 204) return fallback;
     return parseJson(response, fallback);
-  } catch (error) {
-    console.error(`API request failed: ${path}`, error);
+  } catch {
     return fallback;
   }
 }
@@ -57,8 +68,7 @@ async function postJsonResult<T>(path: string, body: unknown): Promise<ApiResult
       cache: "no-store",
       credentials: "include",
       headers: {
-        "Content-Type": "application/json",
-        "x-device-fingerprint": await getDeviceFingerprint()
+        "Content-Type": "application/json"
       },
       body: JSON.stringify(body ?? {})
     });
@@ -68,9 +78,8 @@ async function postJsonResult<T>(path: string, body: unknown): Promise<ApiResult
       return { data: null, error: readApiError(payload, `HTTP ${response.status}`), status: response.status };
     }
     return { data: (payload as T) ?? null, error: "", status: response.status };
-  } catch (error) {
-    console.error(`API request failed: ${path}`, error);
-    return { data: null, error: "Network request failed.", status: 0 };
+  } catch {
+    return { data: null, error: "无法连接后端服务，请稍后重试。", status: 0 };
   }
 }
 
@@ -107,17 +116,11 @@ export async function fetchCurrentMember() {
 }
 
 export async function loginMember(email: string, password: string) {
-  return postJsonResult<MemberUser>(
-    "/api/auth/login",
-    { email, password, deviceFingerprint: await getDeviceFingerprint() }
-  );
+  return postJsonResult<MemberUser>("/api/auth/login", { email, password });
 }
 
 export async function registerMember(email: string, password: string) {
-  return postJsonResult<MemberUser>(
-    "/api/auth/register",
-    { email, password, deviceFingerprint: await getDeviceFingerprint() }
-  );
+  return postJsonResult<MemberUser>("/api/auth/register", { email, password });
 }
 
 export async function logoutMember() {
@@ -150,6 +153,14 @@ export async function fetchAbaSearchTerms(params: Record<string, string | number
     weekEnd: null,
     compareWeekStart: null
   });
+}
+
+export async function fetchAbaSearchTermsResult(params: Record<string, string | number | undefined>) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return getJsonResult<AbaSearchTermsResponse>(`/api/aba/search-terms?${query.toString()}`);
 }
 
 export async function fetchAbaSearchTermsExport(params: Record<string, string | number | undefined>) {
