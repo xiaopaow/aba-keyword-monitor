@@ -6,6 +6,7 @@ git fetch origin main
 git checkout main
 git pull --ff-only origin main
 npm ci
+npm run build --workspace @aba/shared
 npm run build --workspace @aba/api
 npm run build --workspace @aba/web
 
