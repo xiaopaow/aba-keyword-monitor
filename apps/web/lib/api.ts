@@ -83,6 +83,28 @@ async function postJsonResult<T>(path: string, body: unknown): Promise<ApiResult
   }
 }
 
+async function patchJsonResult<T>(path: string, body: unknown): Promise<ApiResult<T>> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: "PATCH",
+      cache: "no-store",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body ?? {})
+    });
+    const text = await response.text();
+    const payload = parsePayload(text);
+    if (!response.ok) {
+      return { data: null, error: readApiError(payload, `HTTP ${response.status}`), status: response.status };
+    }
+    return { data: (payload as T) ?? null, error: "", status: response.status };
+  } catch {
+    return { data: null, error: "无法连接后端服务，请稍后重试。", status: 0 };
+  }
+}
+
 async function parseJson<T>(response: Response, fallback: T): Promise<T> {
   const text = await response.text();
   if (!text.trim()) return fallback;
@@ -113,6 +135,59 @@ function readApiError(payload: unknown, fallback: string) {
 
 export async function fetchCurrentMember() {
   return getJson<MemberUser | null>("/api/auth/me", null);
+}
+
+export interface AdminMember {
+  id: number;
+  email: string;
+  plan: "trial" | "basic" | "pro";
+  role: "member" | "admin";
+  status: "active" | "blocked" | "expired";
+  expiresAt: string | null;
+  deviceBound: boolean;
+  activeSessions: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminMemberList {
+  rows: AdminMember[];
+  total: number;
+  page: number;
+  pageSize: number;
+  summary: {
+    total: number;
+    admins: number;
+    active: number;
+    trial: number;
+    basic: number;
+    pro: number;
+  };
+}
+
+export async function fetchAdminMembers(params: {
+  query?: string;
+  plan?: string;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return getJsonResult<AdminMemberList>(`/api/admin/members?${query.toString()}`);
+}
+
+export async function updateAdminMember(
+  id: number,
+  body: { plan?: AdminMember["plan"]; status?: AdminMember["status"]; expiresAt?: string | null; extendDays?: number }
+) {
+  return patchJsonResult<AdminMember>(`/api/admin/members/${id}`, body);
+}
+
+export async function revokeAdminMemberSessions(id: number) {
+  return postJsonResult<{ ok: boolean; affectedRows: number }>(`/api/admin/members/${id}/revoke-sessions`, {});
 }
 
 export async function loginMember(email: string, password: string) {

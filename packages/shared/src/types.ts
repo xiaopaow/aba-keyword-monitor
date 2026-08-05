@@ -157,6 +157,7 @@ export interface MemberUser {
   id: number;
   email: string;
   plan: "trial" | "basic" | "pro";
+  role: "member" | "admin";
   status: string;
   expiresAt: string | null;
   deviceBound: boolean;

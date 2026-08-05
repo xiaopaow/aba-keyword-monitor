@@ -5,6 +5,8 @@ import type { RowDataPacket } from "mysql2/promise";
 import { MysqlService } from "../db/mysql.service.js";
 
 type MembershipPlan = "trial" | "basic" | "pro";
+type MemberRole = "member" | "admin";
+type MemberStatus = "active" | "blocked" | "expired";
 type AccessAction = "query" | "export" | "copy";
 
 interface UserRow extends RowDataPacket {
@@ -12,7 +14,8 @@ interface UserRow extends RowDataPacket {
   email: string;
   password_hash: string;
   plan: MembershipPlan;
-  status: "active" | "blocked" | "expired";
+  role: MemberRole;
+  status: MemberStatus;
   expires_at: Date | string | null;
   device_fingerprint: string | null;
 }
@@ -27,9 +30,23 @@ export interface AuthenticatedUser {
   id: number;
   email: string;
   plan: MembershipPlan;
+  role: MemberRole;
   status: string;
   expiresAt: string | null;
   deviceBound: boolean;
+}
+
+interface AdminMemberRow extends RowDataPacket {
+  id: number;
+  email: string;
+  plan: MembershipPlan;
+  role: MemberRole;
+  status: MemberStatus;
+  expires_at: Date | string | null;
+  device_fingerprint: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  active_sessions: number;
 }
 
 const SESSION_COOKIE = "aba_session";
@@ -149,7 +166,7 @@ export class AuthService implements OnModuleInit {
 
     const rows = await this.mysql.query<UserRow>(
       `SELECT s.id AS session_id, s.user_id, s.expires_at AS session_expires_at, s.revoked_at,
-              u.id, u.email, u.password_hash, u.plan, u.status, u.expires_at, u.device_fingerprint
+              u.id, u.email, u.password_hash, u.plan, u.role, u.status, u.expires_at, u.device_fingerprint
        FROM aba_member_sessions s
        JOIN aba_members u ON u.id = s.user_id
        WHERE s.token_hash = ?
@@ -247,9 +264,196 @@ export class AuthService implements OnModuleInit {
       id: user.id,
       email: user.email,
       plan: user.plan,
+      role: user.role,
       status: user.status,
       expiresAt: user.expires_at ? new Date(user.expires_at).toISOString() : null,
       deviceBound: Boolean(user.device_fingerprint)
+    };
+  }
+
+  async listMembersForAdmin(options: { query?: string; plan?: string; status?: string; page?: number; pageSize?: number }) {
+    const page = Math.max(Math.floor(Number(options.page ?? 1)), 1);
+    const pageSize = Math.min(Math.max(Math.floor(Number(options.pageSize ?? 20)), 1), 100);
+    const offset = (page - 1) * pageSize;
+    const where: string[] = [];
+    const params: unknown[] = [];
+    const search = String(options.query ?? "").trim().toLowerCase();
+
+    if (search) {
+      where.push("LOWER(m.email) LIKE ?");
+      params.push(`%${search}%`);
+    }
+    if (options.plan && ["trial", "basic", "pro"].includes(options.plan)) {
+      where.push("m.plan = ?");
+      params.push(options.plan);
+    }
+    if (options.status && ["active", "blocked", "expired"].includes(options.status)) {
+      where.push("m.status = ?");
+      params.push(options.status);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const [countRows, rows, summaryRows] = await Promise.all([
+      this.mysql.query<RowDataPacket>(
+        `SELECT COUNT(*) AS total FROM aba_members m ${whereSql}`,
+        params
+      ),
+      this.mysql.query<AdminMemberRow>(
+        `SELECT m.id, m.email, m.plan, m.role, m.status, m.expires_at, m.device_fingerprint,
+                m.created_at, m.updated_at,
+                (
+                  SELECT COUNT(*)
+                  FROM aba_member_sessions s
+                  WHERE s.user_id = m.id
+                    AND s.revoked_at IS NULL
+                    AND s.expires_at > NOW()
+                ) AS active_sessions
+         FROM aba_members m
+         ${whereSql}
+         ORDER BY m.created_at DESC, m.id DESC
+         LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+      ),
+      this.mysql.query<RowDataPacket>(
+        `SELECT COUNT(*) AS total,
+                SUM(role = 'admin') AS admins,
+                SUM(status = 'active') AS active,
+                SUM(plan = 'trial') AS trial,
+                SUM(plan = 'basic') AS basic,
+                SUM(plan = 'pro') AS pro
+         FROM aba_members`
+      )
+    ]);
+
+    return {
+      rows: rows.map((row) => ({
+        id: Number(row.id),
+        email: row.email,
+        plan: row.plan,
+        role: row.role,
+        status: row.status,
+        expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : null,
+        deviceBound: Boolean(row.device_fingerprint),
+        activeSessions: Number(row.active_sessions ?? 0),
+        createdAt: new Date(row.created_at).toISOString(),
+        updatedAt: new Date(row.updated_at).toISOString()
+      })),
+      total: Number(countRows[0]?.total ?? 0),
+      page,
+      pageSize,
+      summary: {
+        total: Number(summaryRows[0]?.total ?? 0),
+        admins: Number(summaryRows[0]?.admins ?? 0),
+        active: Number(summaryRows[0]?.active ?? 0),
+        trial: Number(summaryRows[0]?.trial ?? 0),
+        basic: Number(summaryRows[0]?.basic ?? 0),
+        pro: Number(summaryRows[0]?.pro ?? 0)
+      }
+    };
+  }
+
+  async updateMemberForAdmin(
+    memberId: number,
+    body: { plan?: string; status?: string; expiresAt?: string | null; extendDays?: number }
+  ) {
+    if (!Number.isInteger(memberId) || memberId <= 0) throw new ForbiddenException("无效的账号 ID。");
+
+    const currentMember = await this.getMemberForAdmin(memberId);
+    if (currentMember.role === "admin") {
+      if (body.plan !== undefined && body.plan !== "pro") {
+        throw new ForbiddenException("管理员账号必须保留商业版套餐。");
+      }
+      if (body.status !== undefined && body.status !== "active") {
+        throw new ForbiddenException("不能停用或过期管理员账号。");
+      }
+    }
+
+    const updates: string[] = [];
+    const params: unknown[] = [];
+    if (body.plan !== undefined) {
+      if (!["trial", "basic", "pro"].includes(body.plan)) throw new ForbiddenException("无效的套餐。");
+      updates.push("plan = ?");
+      params.push(body.plan);
+    }
+    if (body.status !== undefined) {
+      if (!["active", "blocked", "expired"].includes(body.status)) throw new ForbiddenException("无效的账号状态。");
+      updates.push("status = ?");
+      params.push(body.status);
+    }
+    if (body.expiresAt !== undefined) {
+      if (body.expiresAt === null || body.expiresAt === "") {
+        updates.push("expires_at = NULL");
+      } else {
+        const expiresAt = new Date(body.expiresAt);
+        if (Number.isNaN(expiresAt.getTime())) throw new ForbiddenException("无效的有效期日期。");
+        updates.push("expires_at = ?");
+        params.push(expiresAt);
+      }
+    }
+    if (body.extendDays !== undefined) {
+      const extendDays = Math.floor(Number(body.extendDays));
+      if (!Number.isInteger(extendDays) || extendDays < 1 || extendDays > 3650) {
+        throw new ForbiddenException("延长天数必须在 1 到 3650 天之间。");
+      }
+      updates.push(`expires_at = DATE_ADD(GREATEST(COALESCE(expires_at, NOW()), NOW()), INTERVAL ${extendDays} DAY)`);
+    }
+    if (!updates.length) throw new ForbiddenException("没有可更新的字段。");
+
+    const result = await this.mysql.connection(async (connection) => {
+      const [updateResult] = await connection.execute(
+        `UPDATE aba_members SET ${updates.join(", ")} WHERE id = ?`,
+        [...params, memberId] as Array<string | number | Date | null>
+      );
+      return updateResult as { affectedRows?: number };
+    });
+    if (!result.affectedRows) throw new ForbiddenException("账号不存在。");
+
+    return this.getMemberForAdmin(memberId);
+  }
+
+  async revokeMemberSessionsForAdmin(memberId: number) {
+    if (!Number.isInteger(memberId) || memberId <= 0) throw new ForbiddenException("无效的账号 ID。");
+    const affectedRows = await this.mysql.connection(async (connection) => {
+      const [result] = await connection.execute(
+        `UPDATE aba_member_sessions
+         SET revoked_at = NOW()
+         WHERE user_id = ? AND revoked_at IS NULL`,
+        [memberId]
+      );
+      return Number((result as { affectedRows?: number }).affectedRows ?? 0);
+    });
+    return { ok: true, affectedRows };
+  }
+
+  private async getMemberForAdmin(memberId: number) {
+    const rows = await this.mysql.query<AdminMemberRow>(
+      `SELECT m.id, m.email, m.plan, m.role, m.status, m.expires_at, m.device_fingerprint,
+              m.created_at, m.updated_at,
+              (
+                SELECT COUNT(*)
+                FROM aba_member_sessions s
+                WHERE s.user_id = m.id
+                  AND s.revoked_at IS NULL
+                  AND s.expires_at > NOW()
+              ) AS active_sessions
+       FROM aba_members m
+       WHERE m.id = ?
+       LIMIT 1`,
+      [memberId]
+    );
+    const row = rows[0];
+    if (!row) throw new ForbiddenException("账号不存在。");
+    return {
+      id: Number(row.id),
+      email: row.email,
+      plan: row.plan,
+      role: row.role,
+      status: row.status,
+      expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : null,
+      deviceBound: Boolean(row.device_fingerprint),
+      activeSessions: Number(row.active_sessions ?? 0),
+      createdAt: new Date(row.created_at).toISOString(),
+      updatedAt: new Date(row.updated_at).toISOString()
     };
   }
 
@@ -261,6 +465,7 @@ export class AuthService implements OnModuleInit {
           email VARCHAR(255) NOT NULL UNIQUE,
           password_hash VARCHAR(255) NOT NULL,
           plan ENUM('trial','basic','pro') NOT NULL DEFAULT 'trial',
+          role ENUM('member','admin') NOT NULL DEFAULT 'member',
           status ENUM('active','blocked','expired') NOT NULL DEFAULT 'active',
           expires_at DATETIME NULL,
           device_fingerprint VARCHAR(255) NULL,
@@ -270,6 +475,18 @@ export class AuthService implements OnModuleInit {
           INDEX idx_status_plan (status, plan)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
+      const [roleColumns] = await connection.query<RowDataPacket[]>(
+        `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'aba_members'
+           AND COLUMN_NAME = 'role'`
+      );
+      if (!roleColumns.length) {
+        await connection.execute(
+          "ALTER TABLE aba_members ADD COLUMN role ENUM('member','admin') NOT NULL DEFAULT 'member' AFTER plan"
+        );
+      }
       await connection.execute(`
         CREATE TABLE IF NOT EXISTS aba_member_sessions (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -346,14 +563,25 @@ export class AuthService implements OnModuleInit {
     const email = (process.env.DEFAULT_ADMIN_EMAIL ?? "admin@aba.local").trim().toLowerCase();
     const password = process.env.DEFAULT_ADMIN_PASSWORD ?? "admin123456";
     const plan = (process.env.DEFAULT_ADMIN_PLAN ?? "pro") as MembershipPlan;
-    const existing = await this.findUserByEmail(email);
-    if (existing) return;
-
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const existing = await this.findUserByEmail(email);
+    if (existing) {
+      await this.mysql.connection(async (connection) => {
+        await connection.execute(
+          `UPDATE aba_members
+           SET role = 'admin', plan = ?, status = 'active',
+               expires_at = GREATEST(COALESCE(expires_at, ?), ?)
+           WHERE id = ?`,
+          [plan, expiresAt, expiresAt, existing.id]
+        );
+      });
+      return;
+    }
+
     await this.mysql.connection(async (connection) => {
       await connection.execute(
-        `INSERT INTO aba_members (email, password_hash, plan, status, expires_at)
-         VALUES (?, ?, ?, 'active', ?)`,
+        `INSERT INTO aba_members (email, password_hash, plan, role, status, expires_at)
+         VALUES (?, ?, ?, 'admin', 'active', ?)`,
         [email, hashPassword(password), plan, expiresAt]
       );
     });

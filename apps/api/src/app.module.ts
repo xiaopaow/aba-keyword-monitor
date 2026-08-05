@@ -4,6 +4,8 @@ import { MysqlService } from "./db/mysql.service.js";
 import { HealthController } from "./health.controller.js";
 import { AbaController } from "./modules/aba.controller.js";
 import { AbaService } from "./modules/aba.service.js";
+import { AdminController } from "./modules/admin.controller.js";
+import { AdminGuard } from "./modules/admin.guard.js";
 import { AuthController } from "./modules/auth.controller.js";
 import { AuthGuard } from "./modules/auth.guard.js";
 import { AuthService } from "./modules/auth.service.js";
@@ -15,7 +17,7 @@ import { KeywordService } from "./modules/keyword.service.js";
 import { RuleService } from "./modules/rule.service.js";
 
 @Module({
-  controllers: [HealthController, AuthController, AbaController, DashboardController, KeywordController, ImportController],
-  providers: [DatabaseService, MysqlService, AuthService, AuthGuard, AbaService, KeywordService, RuleService, ImportService]
+  controllers: [HealthController, AuthController, AdminController, AbaController, DashboardController, KeywordController, ImportController],
+  providers: [DatabaseService, MysqlService, AuthService, AuthGuard, AdminGuard, AbaService, KeywordService, RuleService, ImportService]
 })
 export class AppModule {}

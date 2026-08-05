@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowUp, BarChart3, Headphones, LogIn, LogOut, Moon, Sun, UserPlus, UserRound, X } from "lucide-react";
+import { ArrowUp, BarChart3, Headphones, LogIn, LogOut, Moon, ShieldCheck, Sun, UserPlus, UserRound, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { FormEvent, ReactNode } from "react";
@@ -14,6 +14,8 @@ const navItems = [
   { href: "/", label: "搜索词周报", icon: BarChart3 },
   { href: "/member", label: "会员中心", icon: UserRound }
 ];
+
+const adminNavItem = { href: "/admin/members", label: "账号管理", icon: ShieldCheck };
 
 const AUTH_CHANGED_EVENT = "deepwhale:auth-changed";
 const OPEN_AUTH_EVENT = "deepwhale:open-auth";
@@ -154,6 +156,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  const visibleNavItems = member?.role === "admin" ? [...navItems, adminNavItem] : navItems;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950 transition-colors dark:bg-slate-950 dark:text-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
@@ -161,7 +165,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <WhaleLogo />
 
           <nav className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:flex">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const Icon = item.icon;
               const activeItem = isActive(pathname, item.href);
               return (
@@ -238,8 +242,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
           </div>
         </div>
-        <nav className="grid grid-cols-2 border-t border-slate-100 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950 md:hidden">
-          {navItems.map((item) => {
+        <nav
+          className={clsx(
+            "grid border-t border-slate-100 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-950 md:hidden",
+            visibleNavItems.length === 3 ? "grid-cols-3" : "grid-cols-2"
+          )}
+        >
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const activeItem = isActive(pathname, item.href);
             return (
